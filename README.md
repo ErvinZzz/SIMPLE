@@ -155,6 +155,9 @@ _Success rates are reported out of 10 evaluation trials per level (**Level 0 | L
 | **ACT** | 10 &#124; 9 &#124; 6 | 10 &#124; 9 &#124; 9 | 4 &#124; 4 &#124; 6 | 6 &#124; 5 &#124; 7 | 10 &#124; 10 &#124; 8 | 6 &#124; 8 &#124; 8 |
 
 ## Citation
+
+> Please also consider citing `SIMPLE` if you use our simulation.
+
 ```
 @misc{wei2026psi0,
   title={$\Psi_0$: An Open Foundation Model Towards Universal Humanoid Loco-Manipulation}, 
@@ -164,6 +167,15 @@ _Success rates are reported out of 10 evaluation trials per level (**Level 0 | L
   archivePrefix={arXiv},
   primaryClass={cs.RO},
   url={https://arxiv.org/abs/2603.12263}, 
+}
+```
+
+```
+@article{wei2026simple,
+  title={SIMPLE: Simulation-Based Policy Learning and Evaluation for Humanoid Loco-manipulation},
+  author={Wei, Songlin and Ni, Zhenhao and Liu, Jie and Zhao, Zhenyu and Ye, Junjie and Jing, Hongyi and Xia, Junkai and Liu, Xiawei and Leong, Michael and Heng, Liang and Huang, Di and Wang, Yue},
+  journal={arXiv preprint arXiv:2606.08278},
+  year={2026}
 }
 ```
 
