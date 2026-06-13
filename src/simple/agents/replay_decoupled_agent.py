@@ -25,9 +25,12 @@ class ReplayDecoupledAgent:
     navigate_command, base_height_command) are read from the recorded dataset.
     The WBC policy re-runs with live sim proprioception, and physics advances
     naturally — objects are NOT set from recorded poses.
+
+    Parameters:
+        - num_pad_frames: number of frames to pad with "freeze" action after episode data exhausted
     """
 
-    def __init__(self, robot: G1Sonic, sonic_config: dict):
+    def __init__(self, robot: G1Sonic, sonic_config: dict, num_pad_frames: int = 10):
         self.robot = robot
         self.sim_dt = sonic_config["SIMULATE_DT"]
 
@@ -37,6 +40,7 @@ class ReplayDecoupledAgent:
         # Episode data (set via load_episode)
         self._episode_data: pd.DataFrame | None = None
         self._data_row_index = 0
+        self._num_pad_frames = num_pad_frames
 
     def _init_decoupled_policy(self, sonic_config: dict):
         """Initialize the decoupled WBC pipeline (WBC policy only, no teleop)."""
@@ -134,7 +138,7 @@ class ReplayDecoupledAgent:
         obs["wrist_pose"] = sim_obs.get("wrist_pose", np.zeros(14))
         return obs
 
-    def _build_wbc_goal(self, row) -> dict:
+    def _build_wbc_goal(self, row, is_pad=False) -> dict:
         """Build WBC goal dict from a recorded dataset row."""
         from decoupled_wbc.control.main.constants import (
             DEFAULT_BASE_HEIGHT,
@@ -144,8 +148,11 @@ class ReplayDecoupledAgent:
         t_now = time.monotonic()
         control_freq = self._control_frequency
 
-        navigate_cmd = row["teleop.navigate_command"]
-        base_height_cmd = row["teleop.base_height_command"]
+        navigate_cmd = np.asarray(row["teleop.navigate_command"]).copy()
+        base_height_cmd = np.atleast_1d(np.asarray(row["teleop.base_height_command"])).copy()
+        if is_pad:
+            navigate_cmd[:3] = 0.0  # zero out (vx, vy, vyaw) for padded steps after data exhausted
+            # NOTE we assume the upper_body_pose is absolute, otherwise we need zero-padding too
 
         target_time = t_now + 1 / control_freq
 
@@ -155,8 +162,8 @@ class ReplayDecoupledAgent:
 
         goal = {
             "target_upper_body_pose": upper_body_pose,
-            "navigate_cmd": np.asarray(navigate_cmd),
-            "base_height_command": np.atleast_1d(np.asarray(base_height_cmd)),
+            "navigate_cmd": navigate_cmd,
+            "base_height_command": base_height_cmd,
             "target_time": target_time,
             "interpolation_garbage_collection_time": t_now - 2 / control_freq,
             "timestamp": t_now,
@@ -224,7 +231,8 @@ class ReplayDecoupledAgent:
             raise RuntimeError("No episode data loaded. Call load_episode() first.")
 
         # Check if episode data exhausted
-        if self._data_row_index >= len(self._episode_data):
+        # pad 10 frames with "freeze" action
+        if self._data_row_index >= len(self._episode_data) + self._num_pad_frames:
             raise StopIteration("Episode data exhausted")
 
         # Always run the full WBC pipeline (main loop now at 50Hz)
@@ -233,8 +241,16 @@ class ReplayDecoupledAgent:
         self._wbc_policy.set_observation(wbc_obs)
 
         # replay with recorded teleop commands as goals
-        current_row = self._episode_data.iloc[self._data_row_index]
-        goal = self._build_wbc_goal(current_row)
+        if self._data_row_index >= len(self._episode_data):
+            # After data exhausted, keep running WBC with the last teleop command as goal
+            # (which should be a stable grasp pose for pick-and-place)
+            current_row = self._episode_data.iloc[-1]
+            is_pad = True
+        else:
+            current_row = self._episode_data.iloc[self._data_row_index]
+            is_pad = False
+
+        goal = self._build_wbc_goal(current_row, is_pad=is_pad)
         self._wbc_policy.set_goal(goal)
 
         t_now = time.monotonic()

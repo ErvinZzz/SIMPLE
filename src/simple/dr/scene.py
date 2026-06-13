@@ -82,13 +82,24 @@ class TabletopSceneDR(SceneDR):
                     scene = self.scene_manager[room_uid]
                 else:
                     scene = self.scene_manager.sample()
+                if self.cfg.randomize_scene_pose and hasattr(scene, "dr"):
+                    scene.dr()
+                elif hasattr(scene, "middle"):
+                    scene.middle()
 
             # table randomization
             if isinstance(self.scene_manager, HssdSceneManager):
                 assert isinstance(scene, HssdSuite)
                 # table has fixed size in HSSD scenes
                 # but table height can be overridden
-                table_size = np.concatenate([scene.conf["table_size"][:2], [0.1]])
+                if self.cfg.table_size is not None:
+                    table_size = (
+                        self.cfg.table_size.middle()
+                        if self.cfg.scene_mode == "fixed"
+                        else self.cfg.table_size.sample()
+                    )
+                else:
+                    table_size = np.concatenate([scene.conf["table_size"][:2], [0.1]])
 
                 table_position = [0.0, 0.0] #default table position
                 if  self.cfg.table_position is not None:
@@ -138,13 +149,18 @@ class TabletopSceneDR(SceneDR):
                     assert isinstance(scene, HssdSuite)
                     # table has fixed size in HSSD scenes
                     # but table height can be overridden
-                    table2_size = np.concatenate([scene.conf["table2_size"][:2], [0.1]])
+                    if self.cfg.table2_size is not None:
+                        table2_size = self.cfg.table2_size.middle()
+                    elif "table2_size" in scene.conf:
+                        table2_size = np.concatenate([scene.conf["table2_size"][:2], [0.1]])
+                    else:
+                        table2_size = table_size
                     if  self.cfg.table2_position is not None:
                         table2_position = self.cfg.table2_position.middle()
                     else:
                         table2_position = scene.conf["table2_position"][:2] #scene.conf["table_position"]
                     if self.cfg.table2_height is None:
-                        table2_height = scene.conf["table2_size"][2] #scene.conf["table_height"]
+                        table2_height = scene.conf.get("table2_size", scene.conf["table_size"])[2] #scene.conf["table_height"]
                     else:
                         table2_height = self.cfg.table2_height.middle() if self.cfg.scene_mode == "fixed" else self.cfg.table2_height.sample()
                     if self.cfg.table2_rotation_z is None:
@@ -215,14 +231,7 @@ class TabletopSceneDRCfg(RandomizerCfg):
     table2_position: Box | None = None
     table2_height: Box | None = None
     table2_rotation_z: Box | None = None
+    randomize_scene_pose: bool = True
 
     def __post_init__(self):
-        if self.scene_manager == "hssd":
-            assert (
-                self.scene_mode == "fixed" or
-                (self.table_size is None 
-                # and self.table_position is None
-                # and self.table_height is None
-                and self.rotation_z is None)
-            ), "When using 'hssd' scene manager, table_size, table_position, table_height, and rotation_z are fixed."
-
+        pass

@@ -38,17 +38,31 @@ if TYPE_CHECKING:
     from simple.envs.sonic_loco_manip import SonicLocoManipEnv
 
 from simple.cli.render_decoupled_wbc import _load_episodes, _load_episode_configs
+from simple.cli._decoupled_wbc_recording import (
+    set_ego_view_feature_shape,
+    validate_existing_ego_view_feature_shape,
+)
 from simple.agents.replay_decoupled_agent import ReplayDecoupledAgent
+from simple.envs.wrappers import VideoRecorder
 from simple.robots.g1_sonic import G1Sonic
 from simple.utils import NumpyArrayEncoder
 
 
-def _init_exporter(save_dir: str, task_prompt: str, robot_model, obj_names: list[str], joint_names: list[str]):
+def _init_exporter(
+    save_dir: str,
+    task_prompt: str,
+    robot_model,
+    obj_names: list[str],
+    joint_names: list[str],
+    ego_view_shape=None,
+):
     """Create a Gr00tDataExporter for LeRobot-format recording."""
     from decoupled_wbc.data.exporter import Gr00tDataExporter
     from decoupled_wbc.data.utils import get_dataset_features, get_modality_config
 
     features = get_dataset_features(robot_model)
+    set_ego_view_feature_shape(features, ego_view_shape)
+    validate_existing_ego_view_feature_shape(save_dir, ego_view_shape)
     features["observation.state"]["names"] = joint_names # state joint names
 
     modality_config = get_modality_config(robot_model)
@@ -201,9 +215,13 @@ def main(
     webrtc: Annotated[bool, typer.Option()] = True,
     render_hz: Annotated[int, typer.Option()] = 50,
     num_episodes: Annotated[int, typer.Option()] = -1,
+    episode_start: Annotated[int, typer.Option()] = 0,
     record: Annotated[bool, typer.Option()] = True,
     save_dir: Annotated[str, typer.Option()] = "data/replay_decoupled_wbc",
-    success_criteria: Annotated[float, typer.Option()] = 0.5,
+    replay_dir: Annotated[str, typer.Option()] = "",
+    loop_episodes: Annotated[bool, typer.Option()] = False,
+    dr_level: Annotated[int | None, typer.Option()] = None,
+    success_criteria: Annotated[float | None, typer.Option()] = None,
     resume: Annotated[bool, typer.Option()] = False
 ):
     """Physics-based replay of recorded teleop through decoupled WBC pipeline with dataset recording.
@@ -223,10 +241,13 @@ def main(
     # Load episodes from parquet
     print(f"Loading dataset from {data_dir} ...")
     episodes = _load_episodes(data_dir)
-    total_episodes = len(episodes)
+    is_mapping = hasattr(episodes, "keys")
+    episode_ids = sorted(episodes.keys()) if is_mapping else list(range(len(episodes)))
+    total_episodes = len(episode_ids)
     if num_episodes < 0:
         num_episodes = total_episodes
-    num_episodes = min(num_episodes, total_episodes)
+    if not loop_episodes:
+        num_episodes = min(num_episodes, total_episodes)
     print(f"Loaded {total_episodes} episodes, will replay {num_episodes}")
 
     # Load per-episode environment configs
@@ -253,12 +274,18 @@ def main(
         webrtc=webrtc,
         max_episode_steps=30000,
         sonic_config=sonic_config,
-        success_criteria=success_criteria
     )
     sonic_env: SonicLocoManipEnv = env.unwrapped  # type: ignore
     task = sonic_env.task
     robot = task.robot
     assert isinstance(robot, G1Sonic)
+
+    # Use provided success_criteria or fall back to task's metadata
+    if success_criteria is not None:
+        task.success_criteria = success_criteria
+        task.metadata["success_criteria"] = success_criteria
+    if replay_dir:
+        env = VideoRecorder(env, video_folder=replay_dir, framerate=render_hz)
 
     # Create agent once (WBC policy persists across episodes)
     agent = ReplayDecoupledAgent(robot, sonic_config)
@@ -306,7 +333,7 @@ def main(
         # Calculate initial progress for resume mode
         initial_progress = len(results) if resume else 0
         pbar = tqdm(
-            range(num_episodes),
+            range(episode_start, episode_start + num_episodes),
             desc="Episodes",
             unit="ep",
             position=0,
@@ -314,20 +341,45 @@ def main(
             initial=initial_progress
         )
         for ep_idx in pbar:
-            if ep_idx not in episodes:
-                print(f"Episode {ep_idx} not found, skipping")
-                continue
+            # if ep_idx <= 66:
+            #     continue
+            if loop_episodes:
+                src_idx = ep_idx % total_episodes
+                src_ep_id = episode_ids[src_idx]
+            else:
+                src_ep_id = ep_idx
+
+            if is_mapping:
+                if src_ep_id not in episodes:
+                    print(f"Episode {src_ep_id} not found, skipping")
+                    continue
+            else:
+                if src_ep_id >= total_episodes:
+                    print(f"Episode {src_ep_id} not found, skipping")
+                    continue
 
             # Skip if already processed in resume mode
             if resume and ep_idx in results:
                 pbar.update(1)
                 continue
 
-            ep_data = episodes[ep_idx]
+            ep_data = episodes[src_ep_id]
 
             # Reset environment with the exact scene configuration
-            env_conf = episode_configs[ep_idx]
-            observation, info = env.reset(options={"state_dict": env_conf})
+            env_conf = episode_configs[src_ep_id]
+            if env_conf.get("uid") != task.uid:
+                print(
+                    f"[warn] env/dataset task mismatch: dataset uid={env_conf.get('uid')!r} "
+                    f"vs task.uid={task.uid!r} - overriding env_conf uid"
+                )
+                env_conf["uid"] = task.uid
+            observation, info = env.reset(
+                options={
+                    "state_dict": env_conf,
+                    "task_id": f"episode_{ep_idx}",
+                    "dr_level": dr_level,
+                }
+            )
 
             # Save env_conf immediately while it's intact (before lighting state gets cleared)
             saved_env_conf = env_conf
@@ -353,9 +405,11 @@ def main(
                     task.instruction,
                     agent._dwbc_robot_model,
                     obj_names,
-                    robot.joint_names
+                    robot.joint_names,
+                    observation["head_stereo_left"].shape,
                 )
                 print(f"[Record] Exporter initialized, saving to {run_save_dir}")
+                print(f"[Record] Ego view shape: {observation['head_stereo_left'].shape}")
                 print(f"[Record] Recording {len(obj_names)} objects: {obj_names}")
 
                 # Verify exporter state matches saved episodes in resume mode
@@ -380,7 +434,7 @@ def main(
                 while not robot.stabilized:
                     step_start = time.monotonic()
                     action = agent.get_stabilize_action(observation)
-                    observation, reward, terminated, truncated, info = env.step(action)
+                    observation, reward, terminated, truncated, info = sonic_env.step(action) # call the raw env step to avoid recording stabilization steps in the dataset
 
                     sonic_env.update_viewer()
                     sonic_env.update_reward()
@@ -394,6 +448,10 @@ def main(
                     sim_cnt += 1
             finally:
                 stab_pbar.close()
+
+            # Reset video so it starts at the first dataset action (skip stabilization).
+            if isinstance(env, VideoRecorder):
+                env._init_writers(observation)
 
             # === DEBUGGING ===
             mjModel = env.unwrapped.mjModel

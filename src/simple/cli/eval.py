@@ -28,7 +28,7 @@ from rich.live import Live
 from typing_extensions import Annotated
 
 import simple.envs as _  # noqa: F401
-from simple.envs.wrappers import VideoRecorder
+from simple.envs.wrappers import StandStabilizationWrapper, VideoRecorder
 from simple.evals.api import EvalConfig, EvalResult
 from simple.evals.tui import (
     WorkerProgress,
@@ -157,6 +157,7 @@ def _run_eval_worker(
     num_episodes: Annotated[int, typer.Option()] = 100,
     episode_start: Annotated[int, typer.Option()] = 0,
     data_dir: Annotated[str, typer.Option()] = "data/datagen",
+    rollout_save_dir: Annotated[str | None, typer.Option()] = None,
     success_criteria: Annotated[float, typer.Option()] = 0.9,
     save_video: Annotated[bool, typer.Option("--save-video/--no-save-video")] = True,
     worker_id: int = 0,
@@ -176,6 +177,9 @@ def _run_eval_worker(
 
     eval_output_dir = os.path.join(eval_dir, policy, env_id.split("/")[1], split)
     os.makedirs(eval_output_dir, exist_ok=True)
+
+    if rollout_save_dir and num_workers != 1:
+        raise ValueError("LeRobot rollout recording only supports num_workers=1.")
 
     if episode_start < 0:
         raise ValueError(f"episode_start must be >= 0, got {episode_start}")
@@ -204,7 +208,7 @@ def _run_eval_worker(
 
         from simple.datasets.lerobot import get_episode_lerobot
 
-        dataset = LeRobotDataset(repo_id=env_id, root=data_dir)
+        dataset = LeRobotDataset(repo_id=env_id, root=data_dir, video_backend="pyav")
         dataset_size = dataset.num_episodes
         render_hz = dataset.meta.fps
         print(f"loaded dataset with {dataset_size} episodes.")
@@ -235,6 +239,10 @@ def _run_eval_worker(
     raw_env = gym.make(env_id, **make_kwargs)
     task = raw_env.unwrapped.task  # type: ignore[attr-defined]
 
+    # Run a 60-step "stand" warmup inside env.reset for Humanoid robots so the
+    # rollout starts from a stabilized pose. No-op for non-Humanoid robots.
+    raw_env = StandStabilizationWrapper(raw_env)
+
     # Use provided max_episode_steps or fall back to task's metadata
     if max_episode_steps is None:
         max_episode_steps = task.metadata.get("max_episode_steps")
@@ -248,6 +256,15 @@ def _run_eval_worker(
     policy_module = importlib.import_module(f"simple.baselines.{policy}")
     agent_clazz = getattr(policy_module, f"{snake_to_pascal(policy)}Agent")
     agent = agent_clazz(task.robot, host, port)
+    rollout_env = raw_env
+    if rollout_save_dir:
+        from simple.envs.lerobot import LerobotRecorder
+
+        rollout_env = LerobotRecorder(
+            env=raw_env,
+            root_dir=rollout_save_dir,
+            agent=agent,
+        )
     setup_seconds = time.perf_counter() - setup_start_time
     report(
         "worker_init",
@@ -266,14 +283,14 @@ def _run_eval_worker(
 
         if save_video:
             env = VideoRecorder(
-                env=raw_env,
+                env=rollout_env,
                 video_folder=eval_output_dir,
                 name_prefix=task_id,
                 framerate=render_hz,
                 write_png=False,
             )
         else:
-            env = raw_env
+            env = rollout_env
 
         observation, info = env.reset(options={"state_dict": env_conf})
         frame_idx = 0
@@ -324,7 +341,6 @@ def _run_eval_worker(
 
         if save_video and isinstance(env, VideoRecorder):
             env.release()
-
     persist_payload("ok", dict(stats))
     report("worker_status", status="closing")
     raw_env.close()
@@ -361,9 +377,13 @@ def run_eval(
     num_episodes = config.num_episodes
     episode_start = config.episode_start
     data_dir = config.data_dir
+    rollout_save_dir = config.rollout_save_dir
     success_criteria = config.success_criteria
     save_video = config.save_video
     num_workers = config.num_workers
+
+    if rollout_save_dir and num_workers != 1:
+        raise ValueError("LeRobot rollout recording only supports num_workers=1.")
 
     if os.environ.get("SIMPLE_DISABLE_TUI", "").lower() in {"1", "true", "yes", "on"}:
         show_progress = False
@@ -402,6 +422,7 @@ def run_eval(
         num_episodes=num_episodes,
         episode_start=episode_start,
         data_dir=data_dir,
+        rollout_save_dir=rollout_save_dir,
         success_criteria=success_criteria,
         save_video=save_video,
     )
@@ -436,6 +457,8 @@ def run_eval(
                     )
             finally:
                 restore_cursor(console)
+                if terminal_stream is not None:
+                    terminal_stream.close()
         else:
             stats = _run_eval_worker(
                 **worker_kwargs,
@@ -610,6 +633,7 @@ def main(
     num_episodes: Annotated[int, typer.Option()] = 100,
     episode_start: Annotated[int, typer.Option()] = 0,
     data_dir: Annotated[str, typer.Option()] = "data/datagen",
+    rollout_save_dir: Annotated[str | None, typer.Option()] = None,
     success_criteria: Annotated[float, typer.Option()] = 0.9,
     save_video: Annotated[bool, typer.Option("--save-video/--no-save-video")] = True,
     num_workers: Annotated[int, typer.Option()] = 1,
@@ -629,10 +653,12 @@ def main(
             num_episodes=num_episodes,
             episode_start=episode_start,
             data_dir=data_dir,
+            rollout_save_dir=rollout_save_dir,
             success_criteria=success_criteria,
             save_video=save_video,
             num_workers=num_workers,
-        )
+        ),
+        show_progress=True if not os.environ.get("DEBUG", 0) else False,
     )
 
 

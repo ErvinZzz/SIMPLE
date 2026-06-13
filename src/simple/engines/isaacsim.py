@@ -443,6 +443,16 @@ class IsaacSimSimulator(Simulator):
             vertical_aperture = cameraEntity.focal_length * cameraEntity.resolution[1] / cameraEntity.fy
             isaacsim_camera.set_horizontal_aperture(horizontal_aperture)
             isaacsim_camera.set_vertical_aperture(vertical_aperture)
+            if cameraEntity.cam_cfg.intrinsics is not None:
+                W, H = cameraEntity.resolution
+                horizontal_offset = (cameraEntity.cx - 0.5 * W) * horizontal_aperture / W
+                vertical_offset = (cameraEntity.cy - 0.5 * H) * vertical_aperture / H
+                try:
+                    usd_camera = UsdGeom.Camera(isaacsim_camera.prim)
+                    usd_camera.GetHorizontalApertureOffsetAttr().Set(float(horizontal_offset))
+                    usd_camera.GetVerticalApertureOffsetAttr().Set(float(vertical_offset))
+                except Exception:
+                    pass
 
     def __update_robot(self):
         robot_prim_path = self.robot.prim_path

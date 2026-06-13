@@ -8,7 +8,8 @@ Licensed under the terms in LICENSE file.
 from simple.core.types import Pose
 from gymnasium import spaces
 import numpy as np
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 @dataclass
 class SensorCfg:
@@ -35,6 +36,10 @@ class CameraCfg(SensorCfg):
     focal_length: float
 
     pose: dict
+
+    intrinsics: dict[str, Any] | None = field(default=None, kw_only=True)
+    depth_intrinsics: dict[str, Any] | None = field(default=None, kw_only=True)
+    depth_to_color_extrinsics: dict[str, Any] | None = field(default=None, kw_only=True)
     
 
     @property
@@ -47,9 +52,29 @@ class CameraCfg(SensorCfg):
     
     @property
     def fy(self) -> float:
+        if self.intrinsics is not None and self.intrinsics.get("fy") is not None:
+            return float(self.intrinsics["fy"])
         fx = self.width / (2 * np.tan(self.fov / 2))
         fy = fx
         return fy
+
+    @property
+    def fx(self) -> float:
+        if self.intrinsics is not None and self.intrinsics.get("fx") is not None:
+            return float(self.intrinsics["fx"])
+        return self.width / (2 * np.tan(self.fov / 2))
+
+    @property
+    def cx(self) -> float:
+        if self.intrinsics is not None and self.intrinsics.get("cx") is not None:
+            return float(self.intrinsics["cx"])
+        return 0.5 * self.width
+
+    @property
+    def cy(self) -> float:
+        if self.intrinsics is not None and self.intrinsics.get("cy") is not None:
+            return float(self.intrinsics["cy"])
+        return 0.5 * self.height
     
     @property
     def position(self) -> list[float]:

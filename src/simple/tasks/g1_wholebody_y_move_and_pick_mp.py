@@ -189,7 +189,7 @@ class G1WholebodyYMoveAndPickMP(Task):
             light_mode="random", # fixed, random
             light_num=(2,3),
             light_color_temperature=Box(low=6001, high=8001),  # I was not joking :)
-            light_intensity=Box(low=5e4, high=5e4),
+            light_intensity=Box(low=1e4*0.8, high=1e4*1.2),
             light_radius=Box(0.08, 0.12),
             light_length=Box(0.51, 2.1),
             light_spacing=Box((1., 1.), (2.5, 2.5)),
@@ -427,7 +427,7 @@ class G1WholebodyYMoveAndPickMP(Task):
         return [
             StandSpec("initialize",),
             
-            WalkSpec("walk to target",vx=0.1,vy=-0.35, target_yaw=-1.57, target_distance=0.85),
+            WalkSpec("walk to target",vx=0.1,vy=-0.35, target_yaw=0, target_distance=0.85),
             PhaseBreakSpec("phase_break_before_pick",grasp_type="bodex"),
             # GraspObjectSpec("approach", target_uid=self.target.uid, pregrasp=False,grasp_type="bodex",hand_uid="dex3_right",lock_links=[ "left_hand_palm_link"]),
             GraspObjectSpec("approach", target_uid=self.target.uid, pregrasp=False,grasp_type="bodex",hand_uid="dex3_right",lock_links=[ "left_hand_palm_link"]),

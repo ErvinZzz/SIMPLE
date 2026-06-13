@@ -187,7 +187,7 @@ class G1WholebodyTabletopHandoverMP(Task):
             light_mode="random", # fixed, random
             light_num=(2,3),
             light_color_temperature=Box(low=6001, high=8001),  # I was not joking :)
-            light_intensity=Box(low=5e4, high=5e4),
+            light_intensity=Box(low=1e4*0.8, high=1e4*1.2),
             light_radius=Box(0.08, 0.12),
             light_length=Box(0.51, 2.1),
             light_spacing=Box((1., 1.), (2.5, 2.5)),
@@ -341,8 +341,8 @@ class G1WholebodyTabletopHandoverMP(Task):
         target_name = str(self.target.asset.label)
         mujoco_env = kwargs.get("mujoco_env", None)
 
-        mj_physics_data = mujoco_env.mj_physics_data
-        mj_physics_model = mujoco_env.mj_physics_model
+        mj_physics_data = mujoco_env.mjData
+        mj_physics_model = mujoco_env.mjModel
 
         for i_contact in range(mj_physics_data.ncon):
             contact = mj_physics_data.contact[i_contact]

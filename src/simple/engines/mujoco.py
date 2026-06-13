@@ -171,7 +171,11 @@ class MujocoSimulator(Simulator):
             self._build_camera(cname, camera)
 
         if not self._is_sonic:
-            z_minus = self.task.layout.scene.table.pose.position[2] + 0.5 * self.task.layout.scene.table.size[2]
+            table = self.task.layout.scene.table
+            if getattr(self.task, "keep_ground_at_world_origin", False):
+                z_minus = 0.0
+            else:
+                z_minus = table.pose.position[2] + 0.5 * table.size[2]
             if hasattr(self.task.robot, "z_offset"):
                 # HACK for vega robot base height
                 z_minus += self.task.robot.z_offset-self.robot_z
@@ -451,7 +455,12 @@ class MujocoSimulator(Simulator):
         if isinstance(actor, Box):
             table_size = 0.5 * np.array(actor.size)
             table_position = actor.pose.position.copy()
-            if not self._is_sonic and table_name == 'table': # allow personalization of other tables
+            default_table_z = -0.5 * actor.size[2]
+            if (
+                not self._is_sonic
+                and table_name == 'table'
+                and np.isclose(table_position[2], default_table_z)
+            ):
                 table_z = - 0.5 * actor.size[2] 
                 table_position[2] = table_z 
             
@@ -468,31 +477,95 @@ class MujocoSimulator(Simulator):
         else:
             raise TypeError(f"Unsupported primitive type: {type(actor)}")
 
+    def _mujoco_camera_intrinsic_kwargs(self, camera: CameraEntity) -> dict[str, Any]:
+        if camera.cam_cfg.intrinsics is None:
+            W, H = camera.resolution
+            fovy = 2 * np.arctan(H / (2 * camera.fy)) * 180 / np.pi
+            return {"fovy": fovy}
+
+        W, H = camera.resolution
+        return {
+            "fovy": 0.0,
+            "resolution": [int(W), int(H)],
+            "sensor_size": [float(W), float(H)],
+            "focal_pixel": [float(camera.fx), float(camera.fy)],
+            "principal_pixel": [
+                float(camera.cx - 0.5 * W),
+                float(camera.cy - 0.5 * H),
+            ],
+        }
+
+    @staticmethod
+    def _set_mujoco_camera_attr(mj_camera, names: tuple[str, ...], value) -> bool:
+        for name in names:
+            if hasattr(mj_camera, name):
+                setattr(mj_camera, name, value)
+                return True
+        return False
+
+    def _apply_mujoco_camera_intrinsics(self, mj_camera, camera: CameraEntity) -> None:
+        if camera.cam_cfg.intrinsics is None:
+            return
+
+        W, H = camera.resolution
+        self._set_mujoco_camera_attr(mj_camera, ("fovy",), 0.0)
+        self._set_mujoco_camera_attr(mj_camera, ("resolution",), [int(W), int(H)])
+        self._set_mujoco_camera_attr(
+            mj_camera,
+            ("sensor_size", "sensorsize"),
+            [float(W), float(H)],
+        )
+        self._set_mujoco_camera_attr(
+            mj_camera,
+            ("focal_pixel", "focalpixel"),
+            [float(camera.fx), float(camera.fy)],
+        )
+        self._set_mujoco_camera_attr(
+            mj_camera,
+            ("principal_pixel", "principalpixel"),
+            [
+                float(camera.cx - 0.5 * W),
+                float(camera.cy - 0.5 * H),
+            ],
+        )
+
+    def _add_mujoco_camera(self, parent, camera: CameraEntity, **kwargs) -> None:
+        intrinsic_kwargs = self._mujoco_camera_intrinsic_kwargs(camera)
+        try:
+            mj_camera = parent.add_camera(**kwargs, **intrinsic_kwargs)
+        except TypeError:
+            W, H = camera.resolution
+            fovy = 2 * np.arctan(H / (2 * camera.fy)) * 180 / np.pi
+            mj_camera = parent.add_camera(**kwargs, fovy=fovy)
+            self._apply_mujoco_camera_intrinsics(mj_camera, camera)
+        else:
+            self._apply_mujoco_camera_intrinsics(mj_camera, camera)
+
     def _build_camera(self, cname:str, camera: CameraEntity):
         q_isaac_mujoco = t3d.quaternions.mat2quat(np.array([
             [ 0,  0, -1],
             [-1,  0,  0],
             [ 0,  1,  0]
         ]))
-        W, H = camera.resolution
-        fovy = 2 * np.arctan(H / (2 * camera.fy)) * 180 / np.pi
         if camera.mount == "eye_on_base":
             # cam_pose = self.task.layout.actors["robot"].pose * camera.pose
             cam_pose = camera.pose
             cam_q = t3d.quaternions.qmult(cam_pose.quaternion, q_isaac_mujoco)
 
-            self.mj_worldbody.add_camera(
+            self._add_mujoco_camera(
+                self.mj_worldbody,
+                camera,
                 name=cname,
                 pos=cam_pose.position,
                 quat=cam_q,
-                fovy=fovy,
             )
         elif camera.mount == "eye_in_hand":
-            self.mj_worldbody.add_camera(
+            self._add_mujoco_camera(
+                self.mj_worldbody,
+                camera,
                 name=cname,
                 pos=[1.5, 0., 0.8],  #  FIXME
                 xyaxes=[0,1,0,-0.5,0,1], 
-                fovy=fovy
             )
         elif camera.mount == "eye_in_head":
             torso_body = None
@@ -513,11 +586,12 @@ class MujocoSimulator(Simulator):
             is_identity_quat = np.allclose(q[1:], 0.0, atol=1e-6) and np.isclose(abs(float(q[0])), 1.0, atol=1e-6)
             assert is_identity_quat, f"Expected eye_in_head camera quaternion to be identity (wxyz)"
 
-            torso_body.add_camera(
+            self._add_mujoco_camera(
+                torso_body,
+                camera,
                 name=cname,
                 pos=DEFAULT_HEAD_CAM_POSITION + camera.pose.position,  # FIXME
                 quat=t3d.quaternions.qmult(DEFAULT_HEAD_CAM_ORIENTATION, q_isaac_mujoco),
-                fovy=fovy
             )
         else:
             raise ValueError(f"Unsupported camera mount: {camera.mount}")

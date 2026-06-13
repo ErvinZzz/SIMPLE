@@ -52,6 +52,7 @@ class G1WholebodyPickAndPlaceAndHugContainerTaskTeleop(Task):
         "reward_dt": 0.02,
         "image_dt": 0.033333,
         "need_gravity": True,
+        "max_episode_steps": 1000,
         # "debug": True
     }
 
@@ -92,24 +93,24 @@ class G1WholebodyPickAndPlaceAndHugContainerTaskTeleop(Task):
         ),
        
         distractors = DistractorDRCfg(
-            res_id="objaverse", 
+            res_id="graspnet1b", 
             number_of_distractors=1,
             allow_duplicates=False,
             exclude=["0","46","6"],  # Exclude the target object
-            include=["65"]
+            include=["2"]
         ),
 
         spatial = SpatialDRCfg(
             spatial_mode="random",
-            robot_region=Box(low=[-0.0, 1,0], high=[0.0, 1,0]),
+            robot_region=Box(low=[0.03, 1.,0], high=[0.05, 1.,0]),
             # robot_orientation_region=Box(low=[0.717, 0, 0, -0.717], high=[0.717, 0, 0, -0.717]),
             # robot_region=Box(low=[-1.15, 0.0,], high=[-1.17, 0.0]),
             target_region=Box(low=[0.27, 1.25], high=[0.32, 1.3]),
-            container_region=Box(low=[0.36, 0.99], high=[0.4, 1.01]),
-            container_rotate_z = Box(low=0, high=0),
+            container_region=Box(low=[0.39, 1], high=[0.42, 1]),
+            container_rotate_z = Box(low=1.57, high=1.57),
             
             distractors_region=[
-                Box(low=[0.28, 0.76], high=[0.32, 0.7]),  # distractor_0 on table1
+                Box(low=[0.28, 0.73], high=[0.3, 0.70]),  # distractor_0 on table1
                 # Box(low=[-0.2, -0.3], high=[-0.0, 0.3]),  # distractor_1 on table1
                 # Box(low=[-0.2, -0.3], high=[-0.0, 0.3]),  # distractor_2 on table1
                 # Box(low=[2.0, -0.6], high=[2.4, 0.6])   # distractor_3 on table2
@@ -149,7 +150,7 @@ class G1WholebodyPickAndPlaceAndHugContainerTaskTeleop(Task):
             light_mode="random", # fixed, random
             light_num=(2,3),
             light_color_temperature=Box(low=6001, high=8001),  # I was not joking :)
-            light_intensity=Box(low=5e4, high=5e4),
+            light_intensity=Box(low=1e4*0.8, high=1e4*1.2),
             light_radius=Box(0.08, 0.12),
             light_length=Box(0.51, 2.1),
             light_spacing=Box((1., 1.), (2.5, 2.5)),
@@ -434,7 +435,7 @@ class G1WholebodyPickAndPlaceAndHugContainerTaskTeleop(Task):
         # print(f"Reward Debug: distractor_in_container={is_distractor_in_container}")
 
         if is_object_in_container and is_container_on_table and (is_distractor_in_container or is_distractor_contact_target):
-            self.reward += 1
+            self.reward += 0.2
         else:
             self.reward = 0.0
         return self.reward

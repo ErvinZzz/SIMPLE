@@ -58,7 +58,8 @@ class G1WholebodyOpenFaucetTaskTeleop(Task):
         "reward_dt": 0.02,
         "image_dt": 0.033333,
         "need_gravity": True,
-        "max_episode_steps": 800,
+        "max_episode_steps": 1000,
+        "success_criteria": 0.2,
         # "debug": True
     }
 
@@ -129,7 +130,7 @@ class G1WholebodyOpenFaucetTaskTeleop(Task):
             light_mode="random",  # fixed, random
             light_num=(2, 3),
             light_color_temperature=Box(low=2001, high=8001),  # I was not joking :)
-            light_intensity=Box(low=1e4, high=1e4),
+            light_intensity=Box(low=1e4*0.8, high=1e4*1.2),
             light_radius=Box(0.08, 0.12),
             light_length=Box(0.51, 1.1),
             light_spacing=Box((1.0, 1.0), (2.0, 2.0)),
@@ -151,7 +152,7 @@ class G1WholebodyOpenFaucetTaskTeleop(Task):
         render_hz: int | None = None,
         dr_level: int = 0,
         # physics_dt: float = 0.002,
-        success_criteria: float = 0.9,
+        # success_criteria: float = 0.9,
         *args,
         **kwargs,
     ):
@@ -170,7 +171,7 @@ class G1WholebodyOpenFaucetTaskTeleop(Task):
         )
 
         self.reward = 0
-        self.success_criteria = success_criteria
+        # self.success_criteria = success_criteria
 
         self._robot = RobotRegistry.make(**self.robot_cfg, **kwargs)
 
@@ -263,7 +264,7 @@ class G1WholebodyOpenFaucetTaskTeleop(Task):
 
     def check_success(self, info: dict[str, Any], *args, **kwargs) -> bool:
         reward = self.compute_reward(info, *args, **kwargs)
-        return reward >= self.success_criteria
+        return reward >= self.metadata["success_criteria"]
     
     def check_wether_faucet_is_opened(self, info: dict[str, Any], *args, **kwargs) -> bool:
         mujoco_env = kwargs.get("mujoco_env",None)

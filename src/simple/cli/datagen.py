@@ -12,6 +12,7 @@ import os
 os.environ["_TYPER_STANDARD_TRACEBACK"]="1"
 import json
 import shutil
+from pathlib import Path
 PRERESET_TASK_STATE = "" #"examples/demo_task_state_dict.json" # 
 
 def main(
@@ -21,7 +22,7 @@ def main(
     sim_mode: Annotated[str, typer.Option()] = "mujoco_isaac",
     headless: Annotated[bool, typer.Option()] = False,
     webrtc: Annotated[bool, typer.Option()] = True,  # Enable WebRTC streaming
-    max_episode_steps: Annotated[int, typer.Option()] = 30000,
+    max_episode_steps: Annotated[int, typer.Option()] = 1000,
     render_hz: Annotated[int, typer.Option()] = 30, # FIXME
     data_format: Annotated[str, typer.Option()] = "lerobot",
     save_dir: Annotated[str, typer.Option()] = "data/datagen",
@@ -32,7 +33,6 @@ def main(
     ignore_target_collision: Annotated[bool, typer.Option()] = False,
     debug: Annotated[bool, typer.Option()] = False,
     easy_motion_gen: Annotated[bool, typer.Option()] = False,
-    eval: Annotated[bool, typer.Option(help="Only generate env configs")] = False,
 ):
     # create environment
     make_kwargs = dict(
@@ -52,39 +52,6 @@ def main(
         make_kwargs["sonic_config"] = sonic_config
     env = gym.make(env_id, **make_kwargs)
     task = env.unwrapped.task  # type: ignore
-
-    # eval mode: generate env configs in lerobot dataset format
-    if eval:
-        import numpy as np
-        recorder = LerobotRecorder(env=env, root_dir=save_dir, agent=None, debug=True)
-
-        for i in tqdm(range(num_episodes), desc="Generating eval env configs"):
-            obs, info = env.reset(options={"state_dict": None})
-            recorder.dataset.clear_episode_buffer()
-            env_conf = task.state_dict()
-
-            # add a single dummy frame with all registered features
-            frame = {}
-            for feat_key, feat_info in recorder.dataset.meta.features.items():
-                if feat_key in ("index", "episode_index", "frame_index", "timestamp", "task_index"):
-                    continue
-                shape = tuple(feat_info["shape"])
-                dtype = np.uint8 if feat_info["dtype"] == "video" else np.dtype(feat_info["dtype"])
-                # use real observation if available
-                obs_short = feat_key.replace("observation.rgb_", "").replace("observation.", "")
-                if obs_short in obs:
-                    frame[feat_key] = obs[obs_short]
-                else:
-                    frame[feat_key] = np.zeros(shape, dtype=dtype)
-
-            recorder.dataset.add_frame(frame, task=task.instruction)
-            recorder.dataset.save_episode()
-            recorder.write_env_config(env_conf, i)
-            print(f"[Eval] Generated env config {i + 1}/{num_episodes}")
-
-        print(f"[Eval] Saved {num_episodes} env configs as lerobot dataset at {recorder.root_dir}")
-        env.close()
-        return
 
     # create motion planner
     render_hz = task.metadata["render_hz"]

@@ -64,7 +64,10 @@ class MaterialDR(Randomizer):
         self.table_materials_infos = self.material_split[split]['table']
         self.ground_materials_infos = self.material_split[split]['ground']
 
-        if self.material_mode in ["rand_all", "rand_tableground"]:
+        if self.cfg.table_material is not None:
+            table_material = self.cfg.table_material
+            ground_material = random.choice(self.ground_materials_infos)
+        elif self.material_mode in ["rand_all", "rand_tableground"]:
             filter = [] # filter glass/mirror/reflective materials
             for mat in self.table_materials_infos:
                 """ if "glass" in mat["name"].lower() or \
@@ -133,4 +136,5 @@ class MaterialDR(Randomizer):
 @dataclass
 class MaterialDRCfg(RandomizerCfg):
     material_mode: str = "fixed"  # fixed, rand_all, rand_tableground, rand_objects
+    table_material: dict | None = None
     randmizer_class: "Randomizer" = MaterialDR

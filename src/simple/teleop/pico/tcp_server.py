@@ -129,6 +129,12 @@ class TCPControlServer:
                 if command == "OPEN_CAMERA":
                     try:
                         camera_req = protocol.parse_camera_request(data)
+                        # client_address = conn.getpeername()[0] 
+    
+
+                        # print(f"Original IP in req: {camera_req['ip']}, overwriting with caller IP: {client_address}")
+                        # camera_req['ip'] = client_address
+                        
                     except ValueError as exc:
                         print(f"[TCPServer] CameraRequest parse error: {exc}")
                         camera_req = {}

@@ -45,11 +45,10 @@ class IntervlaM1G1Agent(PrimitiveAgent):
         port: int,
         upsample_factor=1,
         client=None,
-        skip_stand_warmup: bool = False,
         **kwargs,
     ):
         super().__init__(robot, **kwargs)
-        
+
         self.server_ip = host # if access server host inside docker container
         self.server_port = port
         self.upsample_factor = upsample_factor
@@ -58,7 +57,6 @@ class IntervlaM1G1Agent(PrimitiveAgent):
         self._global_step_idx = 0
         self._session_idx = 0
         self._session_id = self._make_session_id()
-        self._skip_stand_warmup = skip_stand_warmup
 
         # last command (high level input to lower policy)
         self._last_cmd_torso_rpyh = np.array([0, 0, 0, 0.75]) # FIXME hardcoded for g1 wholebody, need to be more general in the future
@@ -77,15 +75,6 @@ class IntervlaM1G1Agent(PrimitiveAgent):
     ):
         self._last_observation = observation
         self._last_qpos = observation["joint_qpos"]
-
-        if self._global_step_idx == 0 and not self._skip_stand_warmup:
-            # standing up
-            for _ in range(60):
-                self.queue_loco_command(
-                    command=[0,0,0,0,0,0,0,0],
-                    motion_type="stand",
-                    keep_waist_pose=False
-                )
 
         if len(self._action_queue) == 0:
             # send query to server

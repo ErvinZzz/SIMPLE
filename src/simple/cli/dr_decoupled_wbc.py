@@ -34,6 +34,10 @@ if TYPE_CHECKING:
     from simple.core.task import Task
 
 from simple.agents.pico_decoupled_agent import PicoDecoupledAgent
+from simple.cli._decoupled_wbc_recording import (
+    set_ego_view_feature_shape,
+    validate_existing_ego_view_feature_shape,
+)
 from simple.cli.render_decoupled_wbc import _load_episodes, _load_episode_configs
 from simple.robots.g1_sonic import G1Sonic
 from simple.utils import NumpyArrayEncoder
@@ -45,12 +49,21 @@ def _make_sonic_config() -> dict[str, Any]:
     sonic_config["ENV_NAME"] = "simple"
     return sonic_config
 
-def _init_exporter(save_dir: str, task_prompt: str, robot_model, obj_names: list[str], joint_names: list[str]):
+def _init_exporter(
+    save_dir: str,
+    task_prompt: str,
+    robot_model,
+    obj_names: list[str],
+    joint_names: list[str],
+    ego_view_shape=None,
+):
     """Create a Gr00tDataExporter for LeRobot-format recording."""
     from decoupled_wbc.data.exporter import Gr00tDataExporter
     from decoupled_wbc.data.utils import get_dataset_features, get_modality_config
 
     features = get_dataset_features(robot_model)
+    set_ego_view_feature_shape(features, ego_view_shape)
+    validate_existing_ego_view_feature_shape(save_dir, ego_view_shape)
     features["observation.state"]["names"] = joint_names
 
     modality_config = get_modality_config(robot_model)
@@ -97,8 +110,8 @@ def main(
     num_episodes: Annotated[int, typer.Option()] = -1,
     render_hz: Annotated[int, typer.Option()] = 50,
     headless: Annotated[bool, typer.Option()] = False,
-    max_episode_steps: Annotated[int, typer.Option()] = 600,
-    success_criteria: Annotated[float, typer.Option()] = 0.7,
+    max_episode_steps: Annotated[int | None, typer.Option()] = None,
+    success_criteria: Annotated[float | None, typer.Option()] = None,
     save_dir: Annotated[str, typer.Option()] = "data/evals",
 ):
     """Create minimal evaluation dataset with first frame and environment_config."""
@@ -109,14 +122,21 @@ def main(
         sim_mode="mujoco_isaac",
         render_hz=render_hz,
         headless=headless,
-        max_episode_steps=max_episode_steps,
-        success_criteria=success_criteria,
         sonic_config=sonic_config,
         # dr_level=dr_level,
     )
     sonic_env:SonicLocoManipEnv = env.unwrapped  # type: ignore
     task: Task = env.unwrapped.task  # type: ignore
     robot = task.robot
+
+    # Use provided max_episode_steps or fall back to task's metadata
+    if max_episode_steps is None:
+        max_episode_steps = task.metadata.get("max_episode_steps")
+
+    # Use provided success_criteria or fall back to task's metadata
+    if success_criteria is not None:
+        task.metadata["success_criteria"] = success_criteria
+
     print(f"DR level: {dr_level}")
 
     agent = PicoDecoupledAgent(task.robot)  # type: ignore
@@ -164,9 +184,11 @@ def main(
                     task.instruction,
                     agent._dwbc_robot_model,
                     obj_names,
-                    robot.joint_names
+                    robot.joint_names,
+                    observation["head_stereo_left"].shape,
                 )
                 print(f"Exporter initialized, saving to {run_save_dir}")
+                print(f"Ego view shape: {observation['head_stereo_left'].shape}")
                 print(f"Recording {len(obj_names)} objects: {obj_names}")
 
             # Build frame dict from observation (first frame only)

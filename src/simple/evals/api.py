@@ -19,6 +19,7 @@ class EvalConfig:
     num_episodes: int = 100
     episode_start: int = 0
     data_dir: str = "data/datagen"
+    rollout_save_dir: str | None = None
     success_criteria: float = 0.9
     save_video: bool = True
     num_workers: int = 1

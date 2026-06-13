@@ -142,7 +142,7 @@ class G1(CuRoboMixin,Humanoid,Robot,HeadCamMountable,HasDexterousHand):
         print(f'now the ee_link is {self.robot_cfg["kinematics"]["ee_link"]}')
 
 
-    def setup_control(self, mjData, mjModel)-> Tuple[dict[str, Any], dict[str, Any]]:
+    def setup_control(self, mjData, mjModel,**kwargs)-> Tuple[dict[str, Any], dict[str, Any]]:
         actuators = {}
         joints = {}
    

@@ -240,7 +240,7 @@ class SpatialDR(Randomizer):
     def _random_place_one_object(self, obj: Object, region: Box, objtype: str, surface_height: float = 0.0):
         
         object_msh=trimesh.load_mesh(obj.asset.collision_mesh_curobo)
-        for _ in range(100):
+        for _ in range(self.cfg.placement_attempts):
             if objtype == "container":
                 stable_pose = obj.asset.stable_poses[0] # only use the first stable pose for container
             elif self.spatial_mode == "fixed":
@@ -304,6 +304,7 @@ class SpatialDRCfg(RandomizerCfg):
     distractors_region: Box | list[Box] | None = None
     rand_stable_pose: bool = True
     collide_threshold: float = 0.005
+    placement_attempts: int = 100
     spatial_mode: str = "random" # fixed, random
     fixed_stable_pose_idx: int = 0
     target_stable_indices: list[int] | None = None

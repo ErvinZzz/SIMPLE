@@ -160,8 +160,8 @@ class G1WholebodyXMoveAndPickNPlaceMP(Task):
             spatial_mode="random",
             robot_region=Box(low=[-1.4, 0.0,0.0], high=[-1.5, 0.0,0.0]),
 
-            target_region=Box(low=[-0.8, -0.06], high=[-0.85, 0.06]),
-            container_region=Box(low=[-0.63, -0.03], high=[-0.65, 0.0]),
+            target_region=Box(low=[-0.82 -0.06], high=[-0.85, 0.06]),
+            container_region=Box(low=[-0.65, -0.03], high=[-0.65, 0.0]),
 
             distractors_region=Box(low=[0.3, -0.3], high=[-0.5, 0.3]),
             target_stable_indices = [0],
@@ -188,7 +188,7 @@ class G1WholebodyXMoveAndPickNPlaceMP(Task):
             light_mode="random", # fixed, random
             light_num=(2,3),
             light_color_temperature=Box(low=6001, high=8001),  # I was not joking :)
-            light_intensity=Box(low=5e4, high=5e4),
+            light_intensity=Box(low=1e4*0.8, high=1e4*1.2),
             light_radius=Box(0.08, 0.12),
             light_length=Box(0.51, 2.1),
             light_spacing=Box((1., 1.), (2.5, 2.5)),
@@ -419,10 +419,10 @@ class G1WholebodyXMoveAndPickNPlaceMP(Task):
             LowerSpec,
         )
         container_pos = self.container.pose.position
-        place_position = container_pos + np.array([-0.05, -0.05, _PLACE_HEIGHT])
+        place_position = container_pos + np.array([-0.06, -0.0, _PLACE_HEIGHT])
 
         import transforms3d as t3d
-        place_orientation = t3d.euler.euler2quat(90, 0, 0)
+        place_orientation = t3d.euler.euler2quat(-90, 0, 0)
 
 
         return [

@@ -187,7 +187,7 @@ class G1WholebodyBendPickAndPlaceOnSofaVariant1MP(Task):
             light_mode="random", # fixed, random
             light_num=(2,3),
             light_color_temperature=Box(low=6001, high=8001),  # I was not joking :)
-            light_intensity=Box(low=5e4, high=5e4),
+            light_intensity=Box(low=1e4*0.8, high=1e4*1.2),
             light_radius=Box(0.08, 0.12),
             light_length=Box(0.51, 2.1),
             light_spacing=Box((1., 1.), (2.5, 2.5)),
@@ -418,8 +418,8 @@ class G1WholebodyBendPickAndPlaceOnSofaVariant1MP(Task):
             
             # HeightAdjustSpec("adjust_height",height=-0.15),
             HeightAdjustSpec("adjust_height",height=0),
-            TurnSpec("turn",target_yaw=1.57,vx=0.1),
-            TurnSpec("turn",target_yaw=0,vx=0.1),
+            TurnSpec("turn",target_yaw=-1.57,vx=0.1),
+            TurnSpec("turn",target_yaw=-3.14,vx=0.1),
             HeightAdjustSpec("adjust_height",height=-0.3,vx = 0,keep_waist_pose=True),
             OpenGripperSpec("open_gripper",hand_uid="dex3_right"),
             StandSpec("stop",),

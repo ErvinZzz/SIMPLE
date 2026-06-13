@@ -56,7 +56,7 @@ class G1WholebodyXMoveBendPickMP(Task):
         "dr_level": 0,
         "version": 1.0,
         "need_gravity": True,
-        "max_episode_steps": 50,
+        "max_episode_steps": 800,
     }
 
     robot_cfg: dict[str, Any] = dict(
@@ -180,7 +180,7 @@ class G1WholebodyXMoveBendPickMP(Task):
             light_mode="random",  # fixed, random
             light_num=(2, 3),
             light_color_temperature=Box(low=6001, high=8001),  # I was not joking :)
-            light_intensity=Box(low=5e4, high=5e4),
+            light_intensity=Box(low=1e4*0.8, high=1e4*1.2),
             light_radius=Box(0.08, 0.12),
             light_length=Box(0.51, 2.1),
             light_spacing=Box((1.0, 1.0), (2.5, 2.5)),

@@ -34,6 +34,10 @@ from typing_extensions import Annotated, TYPE_CHECKING
 from tqdm import tqdm
 import tyro
 import simple.envs as _  # import all envs
+from simple.cli._decoupled_wbc_recording import (
+    set_ego_view_feature_shape,
+    validate_existing_ego_view_feature_shape,
+)
 
 if TYPE_CHECKING:
     from simple.envs.sonic_loco_manip import SonicLocoManipEnv
@@ -74,7 +78,14 @@ def _load_episode_configs(data_dir: str):
     return configs
 
 
-def _init_replay_exporter(save_dir: str, fps: int, task_prompt: str, obj_names: list[str], joint_names: list[str]):
+def _init_replay_exporter(
+    save_dir: str,
+    fps: int,
+    task_prompt: str,
+    obj_names: list[str],
+    joint_names: list[str],
+    ego_view_shape=None,
+):
     """Create a Gr00tDataExporter for recording replayed Isaac Sim data."""
     from decoupled_wbc.control.robot_model.instantiation.g1 import (
         instantiate_g1_robot_model,
@@ -84,6 +95,8 @@ def _init_replay_exporter(save_dir: str, fps: int, task_prompt: str, obj_names: 
 
     robot_model = instantiate_g1_robot_model()
     features = get_dataset_features(robot_model)
+    set_ego_view_feature_shape(features, ego_view_shape)
+    validate_existing_ego_view_feature_shape(save_dir, ego_view_shape)
     features["observation.state"]["names"] = joint_names # state joint names
     modality_config = get_modality_config(robot_model)
 
@@ -291,9 +304,11 @@ def main(
                 exporter = _init_replay_exporter(
                     f"{os.path.abspath(save_dir)}/{sonic_env.spec.id}/level-{dr_level}", 
                     dataset_fps, task_prompt, obj_names_labels,
-                    robot.joint_names
+                    robot.joint_names,
+                    obs["head_stereo_left"].shape,
                 )
                 print(f"[Record] Exporter initialized, saving to {save_dir}")
+                print(f"[Record] Ego view shape: {obs['head_stereo_left'].shape}")
                 print(f"[Record] Recording {len(obj_names_labels)} objects: {obj_names_labels}")
 
             # Dataset joint names for mapping observation.state → MuJoCo joints

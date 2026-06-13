@@ -20,6 +20,10 @@ if TYPE_CHECKING:
     from simple.envs.sonic_loco_manip import SonicLocoManipEnv
 
 from simple.agents.pico_decoupled_agent import PicoDecoupledAgent
+from simple.cli._decoupled_wbc_recording import (
+    set_ego_view_feature_shape,
+    validate_existing_ego_view_feature_shape,
+)
 from gear_sonic.utils.mujoco_sim.configs import SimLoopConfig
 from simple.robots.g1_sonic import G1Sonic
 
@@ -60,12 +64,21 @@ def _save_episode_env_config(exporter, task, episode_index: int):
             f.write(json.dumps(entry) + "\n")
 
 
-def _init_exporter(save_dir: str, task_prompt: str, robot_model, obj_names: list[str], joint_names: list[str]):
+def _init_exporter(
+    save_dir: str,
+    task_prompt: str,
+    robot_model,
+    obj_names: list[str],
+    joint_names: list[str],
+    ego_view_shape=None,
+):
     """Create a Gr00tDataExporter for LeRobot-format recording."""
     from decoupled_wbc.data.exporter import Gr00tDataExporter
     from decoupled_wbc.data.utils import get_dataset_features, get_modality_config
 
     features = get_dataset_features(robot_model)
+    set_ego_view_feature_shape(features, ego_view_shape)
+    validate_existing_ego_view_feature_shape(save_dir, ego_view_shape)
     features["observation.state"]["names"] = joint_names # state joint names
     modality_config = get_modality_config(robot_model)
 
@@ -99,7 +112,7 @@ def _init_exporter(save_dir: str, task_prompt: str, robot_model, obj_names: list
     return exporter
 
 
-def _build_frame(agent, obj_names: list[str], observation, privileged_info, action):
+def _build_frame(agent, obj_names: list[str], observation, privileged_info, action, target_waist):
     """Assemble one recording frame from current sim state and agent caches."""
     proprio = privileged_info["proprio"]
     rm = agent._dwbc_robot_model
@@ -127,6 +140,8 @@ def _build_frame(agent, obj_names: list[str], observation, privileged_info, acti
     from simple.robots.g1_sonic import WHOLE_BODY_JOINTS
     assert np.allclose(observation["joint_qpos"], np.array([proprio_joints[joint] for joint in WHOLE_BODY_JOINTS], dtype=np.float32))
 
+    # override waist joints in action_q with target_waist from IK, to reflect the actual input to lower-body policy
+    action_q[12:15] = target_waist  # waist joints are indices 12,13,14 in robot_model order
     frame = {
         "observation.images.ego_view": observation["head_stereo_left"],
         "observation.state": np.asarray(observation["joint_qpos"], dtype=np.float64), # obs_state
@@ -166,6 +181,7 @@ def _load_sonic_config() -> dict:
     config = tyro.cli(SimLoopConfig, config=(tyro.conf.ConsolidateSubcommandArgs,), args=[])
     sonic_config = config.load_wbc_yaml()
     sonic_config["ENV_NAME"] = "simple"
+    # sonic_config["high_elbow_pose"] = True
     return sonic_config
 
 def main(
@@ -180,7 +196,8 @@ def main(
     num_episodes: Annotated[int, typer.Option()] = 100,
     shard_size: Annotated[int, typer.Option()] = 100,
     dr_level: Annotated[int, typer.Option()] = 0,
-    record: Annotated[bool, typer.Option()] = False
+    record: Annotated[bool, typer.Option()] = False,
+    success_criteria: Annotated[float, typer.Option()] = 3,
 ):
     assert sim_mode in ["mujoco"], f"Invalid sim_mode {sim_mode} for teleop."
     sim_cnt = 0
@@ -196,7 +213,9 @@ def main(
         headless=headless,
         max_episode_steps=max_episode_steps,
         sonic_config=sonic_config,
-        target=target
+        target=target,
+        dr_level=dr_level,
+        success_criteria=success_criteria
     )
     sonic_env: SonicLocoManipEnv = env.unwrapped  # type: ignore
     task = sonic_env.task
@@ -267,9 +286,11 @@ def main(
             task.instruction, 
             agent._dwbc_robot_model, 
             obj_names,
-            robot.joint_names
+            robot.joint_names,
+            observation["head_stereo_left"].shape,
         )
         print(f"\n[Record] Exporter initialized, saving to {run_save_dir}")
+        print(f"[Record] Ego view shape: {observation['head_stereo_left'].shape}")
         print(f"[Record] Recording {len(obj_names)} objects: {obj_names}")
 
     try:
@@ -281,6 +302,7 @@ def main(
             with telemetry.timer("agent.get_action"):
                 action = agent.get_action(observation, instruction=task.instruction, privileged_info=privileged_info)
             
+            data_frame["target_waist"] = action["target_waist"] # for recording the actual input waist to lower-body policy
             data_frame["observation"] = observation.copy()
             data_frame["action"] = action.copy()
             data_frame["privileged_info"] = privileged_info.copy()

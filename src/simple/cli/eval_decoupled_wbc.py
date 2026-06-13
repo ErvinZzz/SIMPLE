@@ -156,7 +156,8 @@ def _run_eval_worker(
     num_episodes: Annotated[int, typer.Option()] = 16,
     episode_start: Annotated[int, typer.Option()] = 0,
     data_dir: Annotated[str, typer.Option()] = "data/datagen",
-    success_criteria: Annotated[float, typer.Option()] = 0.7,
+    rollout_save_dir: Annotated[str | None, typer.Option()] = None,
+    success_criteria: Annotated[float, typer.Option()] = 0.5,
     save_video: Annotated[bool, typer.Option("--save-video/--no-save-video")] = True,
     sonic_config: dict[str, Any] | None = None,
     worker_id: int = 0,
@@ -182,6 +183,9 @@ def _run_eval_worker(
 
     eval_output_dir = os.path.join(eval_dir, policy, env_id.split("/")[1], split)
     os.makedirs(eval_output_dir, exist_ok=True)
+
+    if rollout_save_dir and num_workers != 1:
+        raise ValueError("LeRobot rollout recording only supports num_workers=1.")
 
     if episode_start < 0:
         raise ValueError(f"episode_start must be >= 0, got {episode_start}")
@@ -211,7 +215,7 @@ def _run_eval_worker(
         from simple.datasets.lerobot import get_episode_lerobot
 
         print("repoid+root", env_id, data_dir)
-        dataset = LeRobotDataset(repo_id=env_id, root=data_dir)
+        dataset = LeRobotDataset(repo_id=env_id, root=data_dir, video_backend="pyav")
         dataset_size = dataset.num_episodes
         render_hz = dataset.meta.fps
         print(f"loaded dataset with {dataset_size} episodes.")
@@ -237,7 +241,6 @@ def _run_eval_worker(
         sim_mode=sim_mode,
         render_hz=render_hz,
         headless=headless,
-        success_criteria=success_criteria,
         sonic_config=sonic_config,
     )
     raw_env = gym.make(env_id, **make_kwargs)
@@ -252,11 +255,24 @@ def _run_eval_worker(
     if max_episode_steps is not None:
         raw_env = TimeLimit(raw_env, max_episode_steps=max_episode_steps)
 
+    # Use provided success_criteria or fall back to task's metadata
+    if success_criteria is not None:
+        task.metadata["success_criteria"] = success_criteria
+
     robot = task.robot
 
     policy_module = importlib.import_module(f"simple.baselines.{policy}")
     agent_clazz = getattr(policy_module, f"{snake_to_pascal(policy)}Agent")
     agent = agent_clazz(task.robot, host, port, sonic_config=sonic_config)
+    rollout_env = raw_env
+    if rollout_save_dir:
+        from simple.envs.lerobot import LerobotRecorder
+
+        rollout_env = LerobotRecorder(
+            env=raw_env,
+            root_dir=rollout_save_dir,
+            agent=agent,
+        )
     setup_seconds = time.perf_counter() - setup_start_time
     report(
         "worker_init",
@@ -269,21 +285,22 @@ def _run_eval_worker(
     stats = defaultdict(bool)
 
     for eps_idx in episode_indices:
-        # if eps_idx >= 1: break
+        # if eps_idx <= 7:
+        #     continue
         env_conf, episode = get_episode(dataset, eps_idx)  # type: ignore[arg-type]
         task_id = f"episode_{eps_idx}"
         report("episode_start", episode=task_id)
 
         if save_video:
             env = VideoRecorder(
-                env=raw_env,
+                env=rollout_env,
                 video_folder=eval_output_dir,
                 name_prefix=task_id,
                 framerate=render_hz,
                 write_png=False,
             )
         else:
-            env = raw_env
+            env = rollout_env
 
         observation, info = env.reset(options={"state_dict": env_conf})
 
@@ -295,7 +312,7 @@ def _run_eval_worker(
         while not robot.stabilized and sim_cnt < 300:
             step_start = time.monotonic()
             action = agent.get_stabilize_action(observation)
-            observation, *_, info = env.step(action)
+            observation, *_, info = sonic_env.step(action) # call the raw env step to avoid consuming the max_episode_steps limit in the TimeLimit wrapper
 
             sonic_env.update_viewer()
             sonic_env.update_reward()
@@ -306,6 +323,10 @@ def _run_eval_worker(
                 time.sleep(sleep_time)
             sim_cnt += 1
 
+        if isinstance(env, VideoRecorder):
+            # empty the initial frames with stabilization steps
+            env._init_writers(observation)
+            
         frame_idx = 0
         episode_start_time = time.perf_counter()
         instruction = task.instruction
@@ -402,9 +423,13 @@ def run_eval(
     num_episodes = config.num_episodes
     episode_start = config.episode_start
     data_dir = config.data_dir
+    rollout_save_dir = config.rollout_save_dir
     success_criteria = config.success_criteria
     save_video = config.save_video
     num_workers = config.num_workers
+
+    if rollout_save_dir and num_workers != 1:
+        raise ValueError("LeRobot rollout recording only supports num_workers=1.")
 
     eval_dir_path = Path(config.eval_dir)
     eval_dir_path.mkdir(parents=True, exist_ok=True)
@@ -438,6 +463,7 @@ def run_eval(
         num_episodes=num_episodes,
         episode_start=episode_start,
         data_dir=data_dir,
+        rollout_save_dir=rollout_save_dir,
         success_criteria=success_criteria,
         save_video=save_video,
         sonic_config=sonic_config,
@@ -649,7 +675,8 @@ def main(
     num_episodes: Annotated[int, typer.Option()] = 20,
     episode_start: Annotated[int, typer.Option()] = 0,
     data_dir: Annotated[str, typer.Option()] = "data/datagen",
-    success_criteria: Annotated[float, typer.Option()] = 0.7,
+    rollout_save_dir: Annotated[str | None, typer.Option()] = None,
+    success_criteria: Annotated[float | None, typer.Option()] = None,
     save_video: Annotated[bool, typer.Option("--save-video/--no-save-video")] = True,
     num_workers: Annotated[int, typer.Option()] = 1,
 ):
@@ -668,10 +695,12 @@ def main(
             num_episodes=num_episodes,
             episode_start=episode_start,
             data_dir=data_dir,
+            rollout_save_dir=rollout_save_dir,
             success_criteria=success_criteria,
             save_video=save_video,
             num_workers=num_workers,
-        )
+        ),
+        show_progress=True if not os.environ.get("DEBUG", 0) else False,
     )
 
 

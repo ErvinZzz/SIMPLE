@@ -280,14 +280,13 @@ class CameraEntity(Entity):
 
         self.pose = Pose(position=position, quaternion=quaternion)
 
-        h = 2 * cam_cfg.focal_length * np.tan(cam_cfg.fov/2)
-        self.fy = self.fx = cam_cfg.width * cam_cfg.focal_length  / h
-        self.cx = 0.5 * cam_cfg.width
-        self.cy = 0.5 * cam_cfg.height
+        self.fx = cam_cfg.fx
+        self.fy = cam_cfg.fy
+        self.cx = cam_cfg.cx
+        self.cy = cam_cfg.cy
         self.mount = cam_cfg.mount
         self.resolution = cam_cfg.resolution
         self.focal_length = cam_cfg.focal_length
 
         # self.height = cam_cfg.height
         # self.width = cam_cfg.width
-  

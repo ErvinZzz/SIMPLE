@@ -66,15 +66,6 @@ class Pi05Agent(PrimitiveAgent):
         self._last_observation = observation
         self._last_qpos = observation["joint_qpos"]
 
-        if self._global_step_idx == 0:
-            # standing up
-            for _ in range(60):
-                self.queue_loco_command(
-                    command=[0,0,0,0,0,0,0,0],
-                    motion_type="stand",
-                    keep_waist_pose=False
-                )
-
         if len(self._action_queue) == 0:
             # send query to server
 

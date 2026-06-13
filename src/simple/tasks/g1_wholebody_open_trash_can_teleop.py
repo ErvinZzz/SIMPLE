@@ -129,7 +129,7 @@ class G1WholebodyOpenTrashCanTaskTeleop(Task):
             light_mode="random",  # fixed, random
             light_num=(2, 3),
             light_color_temperature=Box(low=2001, high=8001),  # I was not joking :)
-            light_intensity=Box(low=1e4, high=1e4),
+            light_intensity=Box(low=1e4*0.8, high=1e4*1.2),
             light_radius=Box(0.08, 0.12),
             light_length=Box(0.51, 1.1),
             light_spacing=Box((1.0, 1.0), (2.0, 2.0)),
@@ -272,7 +272,7 @@ class G1WholebodyOpenTrashCanTaskTeleop(Task):
         
         trash_can_joint0_qpos = mujoco_env.mjData.joint("articulate_joint_0").qpos[0]
         # faucet_joint1_qpos = mujoco_env.mjData.joint("articulate_joint_1").qpos[0]
-        return trash_can_joint0_qpos > 0.8  
+        return trash_can_joint0_qpos > 0.5  
         
 
     def compute_reward(self, info: dict[str, Any], *args, **kwargs) -> float:

@@ -1,4 +1,3 @@
-import envlogger
 import os
 import shutil
 import gymnasium as gym
@@ -19,7 +18,7 @@ class DataRecorder(gym.Wrapper, gym.utils.RecordConstructorArgs):
     def __init__(
         self,
         env: gym.Env,
-        datarocord_env: envlogger.EnvLogger,
+        datarocord_env,
         video_folder:str = "video",
         write_png:bool = False,
         pickup_env=None,

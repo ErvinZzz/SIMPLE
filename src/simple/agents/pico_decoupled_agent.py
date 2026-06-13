@@ -370,6 +370,7 @@ class PicoDecoupledAgent(SonicWbcAgent):
         return ActionCmd(
             "decoupled_wbc",
             target_q=self._cached_target_q,
+            target_waist=wbc_action["target_waist"],
             left_hand_q=self._cached_left_hand_q,
             right_hand_q=self._cached_right_hand_q,
         )
@@ -505,6 +506,7 @@ class PicoDecoupledAgent(SonicWbcAgent):
         return ActionCmd( # all synced!
             "decoupled_wbc",
             target_q=self._cached_target_q, # (29,)
+            target_waist=wbc_action["target_waist"], # (3,) input waist from IK
             left_hand_q=self._cached_left_hand_q, # (7,)
             right_hand_q=self._cached_right_hand_q, # (7,)
             base_height_command=wbc_action["base_height_command"], # (1,)

@@ -11,7 +11,7 @@ import pickle
 from pathlib import Path
 
 import simple.envs as _ # import all envs
-from simple.envs.wrappers import VideoRecorder
+from simple.envs.wrappers import StandStabilizationWrapper, VideoRecorder
 from simple.agents.replay_agent import ReplayAgent
 import itertools
 spinner = itertools.cycle(['|', '/', '-', '\\'])
@@ -26,6 +26,7 @@ def main(
     data_dir: Annotated[str, typer.Option()] = "data/datagen",
     replay_dir: Annotated[str, typer.Option()] = "data/replays",
     num_episodes: Annotated[int, typer.Option()] = 50,
+    episode_start: Annotated[int, typer.Option()] = 0, # replay from episode_start to episode_start + num_episodes
     success_criteria: Annotated[float, typer.Option()] = 0.9,
     is_postprocess: Annotated[bool, typer.Option()] = False,
 ):
@@ -36,8 +37,8 @@ def main(
     if data_format == "lerobot":
         from lerobot.datasets.lerobot_dataset import LeRobotDataset
         from simple.datasets.lerobot import get_episode_lerobot as get_episode
-        dataset = LeRobotDataset(repo_id=env_id,root=data_dir)
-        num_episodes = min(num_episodes, dataset.num_episodes)
+        dataset = LeRobotDataset(repo_id=env_id, root=data_dir, video_backend="pyav")
+        num_episodes = min(num_episodes, dataset.num_episodes - episode_start)
         dataset_fps = dataset.meta.fps
         if render_hz != dataset_fps:
             print("=" * 50)
@@ -77,17 +78,25 @@ def main(
         env_id,
         render_hz=render_hz,
         sim_mode=sim_mode,
-        max_episode_steps=max_episode_steps, 
+        max_episode_steps=max_episode_steps,
         headless=headless,
         success_criteria=success_criteria,
     )
+    # Stand-warmup is now done inside env.reset for Humanoid robots so the agent
+    # sees a stabilized robot from step 0. No-op for non-Humanoid.
+    grasp_env = StandStabilizationWrapper(grasp_env)
     task = grasp_env.unwrapped.task # type: ignore
     # Loop through episodes
     stats = defaultdict(bool)
-    for idx in tqdm(range(num_episodes)):
-        
+    for idx in tqdm(range(episode_start, episode_start + num_episodes)):
+
         env_conf, episode = get_episode(dataset, idx, data_format) # type: ignore
-        assert env_conf["uid"] == task.uid, f"Environment and dataset mismatch: {env_conf['uid']} vs {task.uid}"
+        if env_conf["uid"] != task.uid:
+            # Dataset may have been recorded before the task was renamed (e.g. adding
+            # "_mp" suffix). Warn and forcibly set the uid in env_conf so the inner
+            # task.reset() assert (core/task.py) doesn't fire.
+            print(f"[warn] env/dataset task mismatch: dataset uid={env_conf['uid']!r} vs task.uid={task.uid!r} — overriding env_conf uid to proceed")
+            env_conf["uid"] = task.uid
         task_id = f"episode_{idx}"
 
         # Wrap a video recorder for visualization
@@ -103,6 +112,7 @@ def main(
         # Create replay agent
         replay_agent = ReplayAgent(episode, task.robot, data_format=data_format, upsample_factor=upsample_factor,is_postprocess=is_postprocess)
 
+        pad_last_action = 2 # NOTE repeat the last action for 2 steps to make the env settle
         with tqdm(total=0, bar_format='{desc}', ncols=80, file=sys.stdout) as t:
             # Run the episode
             episode_over = False
@@ -115,7 +125,7 @@ def main(
                     j += 1
                 except StopIteration:
                     episode_over = True
-                    for _ in range(2): # hack for env to settle down
+                    for _ in range(pad_last_action): # hack for env to settle down
                         observation, reward, terminated, truncated, info = env.step(last_action)
                     print(f"Episode completed: all actions executed.")
         

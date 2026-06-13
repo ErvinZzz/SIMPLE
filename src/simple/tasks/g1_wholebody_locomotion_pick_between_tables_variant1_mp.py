@@ -192,7 +192,7 @@ class G1WholebodyLocomotionPickBetweenTablesTaskVariant1MP(Task):
             light_mode="random", # fixed, random
             light_num=(2,3),
             light_color_temperature=Box(low=6001, high=8001),  # I was not joking :)
-            light_intensity=Box(low=5e4, high=5e4),
+            light_intensity=Box(low=1e4*0.8, high=1e4*1.2),
             light_radius=Box(0.08, 0.12),
             light_length=Box(0.51, 2.1),
             light_spacing=Box((1., 1.), (2.5, 2.5)),
@@ -451,9 +451,9 @@ class G1WholebodyLocomotionPickBetweenTablesTaskVariant1MP(Task):
             ),
             LiftSpec("lift", up=0.05, grasp_type="bodex", hand_uid="dex3_right"),
             WalkSpec("get back", vx=-0.35, vy=0.0, target_yaw=0, target_distance=0.1),
-            TurnSpec("turn_90", vx=0.1, target_yaw=1.57),
-            TurnSpec("turn_180", vx=0.1, target_yaw=0),
-            WalkSpec("walk_to_table2", vx=0.35, vy=0.15, target_yaw=0, target_distance=0.06,),
+            TurnSpec("turn_90", vx=0.1, target_yaw=-1.57),
+            TurnSpec("turn_180", vx=0.1, target_yaw=-3.14),
+            WalkSpec("walk_to_table2", vx=0.35, vy=0.15, target_yaw=-3.14, target_distance=0.06,),
             # StandSpec("stand_at_table2"),
             # PhaseBreakSpec("phase_break_before_place", grasp_type="bodex"),
             # MoveEEFToPoseSpec(

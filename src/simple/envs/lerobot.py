@@ -76,6 +76,7 @@ class LerobotRecorder(gym.Wrapper, gym.utils.RecordConstructorArgs):
         shard_size: int = 100,
         agent: Optional[Agent] = None,
         debug: bool = False,
+        dr_level: int | None = None,
     ):
         gym.utils.RecordConstructorArgs.__init__(
             self, root_dir=root_dir, shard_size=shard_size
@@ -83,8 +84,8 @@ class LerobotRecorder(gym.Wrapper, gym.utils.RecordConstructorArgs):
         gym.Wrapper.__init__(self, env)
 
         task_name = env.unwrapped.spec.id
-        dr_level = env.unwrapped.task.dr.level
-        dataset_root_dir = f"{os.path.abspath(root_dir)}/{task_name}/level-{dr_level}"
+        save_dr_level = env.unwrapped.task.dr.level if dr_level is None else dr_level
+        dataset_root_dir = f"{os.path.abspath(root_dir)}/{task_name}/level-{save_dr_level}"
         
         if debug and os.path.exists(dataset_root_dir):
             shutil.rmtree(dataset_root_dir)

@@ -163,6 +163,15 @@ class EnvRunner:
             policy_name=policy_name,
             policy_reset_fn=policy_reset_fn,
         )
+        rollout_env = self._raw_env
+        if self.config.rollout_save_dir:
+            from simple.envs.lerobot import LerobotRecorder
+
+            rollout_env = LerobotRecorder(
+                env=self._raw_env,
+                root_dir=self.config.rollout_save_dir,
+                agent=agent,
+            )
         policy_output_dir = Path(self.config.eval_dir) / self.policy_output_name(resolved_policy_name) / self.config.split
         policy_output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -189,6 +198,7 @@ class EnvRunner:
                 episode_idx=eps_idx,
                 policy_name=resolved_policy_name,
                 eval_output_dir=policy_output_dir,
+                base_env=rollout_env,
                 episode_reset_kwargs_fn=episode_reset_kwargs_fn,
                 progress_reporter=progress_reporter,
             )
@@ -288,11 +298,12 @@ class EnvRunner:
         episode_idx: int,
         policy_name: str,
         eval_output_dir: Path | None = None,
+        base_env: Any | None = None,
         episode_reset_kwargs_fn: Callable[[dict[str, Any], Any], dict[str, Any]] | None = None,
         progress_reporter: Callable[[dict[str, Any]], None] | None = None,
     ) -> EvalEpisodeResult:
         task_id = f"episode_{episode_idx}"
-        env = self._raw_env
+        env = base_env or self._raw_env
         if self.config.save_video:
             from simple.envs.wrappers.video_recorder import VideoRecorder
 

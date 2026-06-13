@@ -21,7 +21,6 @@ class ReplayAgent(PrimitiveAgent):
         self._last_gripper_value = None
         self._upsample_factor = upsample_factor
         self._is_postprocess = is_postprocess
-        
         self._preload_episode()
 
 
@@ -29,13 +28,8 @@ class ReplayAgent(PrimitiveAgent):
     def _preload_episode(self):
         episode_length = len(self._episode)
 
-        if isinstance(self.robot, Humanoid):
-            for _ in range(60):
-                self.queue_loco_command(
-                    command=[0,0,0,0,0,0,0,0],
-                    motion_type="stand",
-                    keep_waist_pose=False
-                )
+        # Stand-warmup is now performed inside env.reset by StandStabilizationWrapper.
+        # The agent's queue holds only dataset actions so step 0 = first dataset action.
 
         print(f"Preloading episode with {episode_length} steps.")
         for step_idx in range(0, episode_length-1):

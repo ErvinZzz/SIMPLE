@@ -88,6 +88,7 @@ class HssdSceneManager(SceneManager):
         import subprocess
         import shutil
         import re
+        import errno
         
         if not os.path.exists(usd_path):
             return
@@ -112,10 +113,27 @@ class HssdSceneManager(SceneManager):
                     src = os.path.join(scene_dir, folder)
                     dst = os.path.join(target_dir, folder)
                     if os.path.exists(src) and not os.path.exists(dst):
-                        shutil.copytree(src, dst)
+                        try:
+                            shutil.copytree(src, dst)
+                        except (OSError, shutil.Error) as e:
+                            tmp_usage = shutil.disk_usage("/tmp")
+                            no_space = (
+                                isinstance(e, OSError) and e.errno == errno.ENOSPC
+                            ) or "No space left on device" in str(e)
+                            if no_space:
+                                raise RuntimeError(
+                                    "Failed to prepare HSSD scene assets because /tmp is out of space. "
+                                    f"Copy failed from {src} to {dst}. "
+                                    f"/tmp free space: {tmp_usage.free / (1024 ** 3):.2f} GiB. "
+                                    "Free space in /tmp and rerun."
+                                ) from e
+                            raise RuntimeError(
+                                f"Failed to prepare HSSD scene assets by copying {src} to {dst}."
+                            ) from e
                         print(f"Hack: Copied {src} to {dst}")
                             
+        except RuntimeError:
+            raise
         except Exception as e:
-            print(f"Error in _hack_fix_tmp_paths: {e}")
+            raise RuntimeError(f"Failed to prepare HSSD temp asset paths for {usd_path}.") from e
     
-

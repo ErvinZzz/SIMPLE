@@ -409,6 +409,18 @@ register(
 )
 
 register(
+    id="simple/G1WholebodyBendPickSimToRealTeleop-v0",
+    entry_point="simple.envs.sonic_loco_manip:SonicLocoManipEnv",
+    kwargs={"task":"g1_wholebody_bend_pick_sim_to_real_teleop"},
+)
+
+register(
+    id="simple/G1WholebodyXMovePickSimToRealTeleop-v0",
+    entry_point="simple.envs.sonic_loco_manip:SonicLocoManipEnv",
+    kwargs={"task":"g1_wholebody_xmove_pick_sim_to_real_teleop"},
+)
+
+register(
     id="simple/G1WholebodyPickAndPlaceAndHugContainerTeleop-v0",
     entry_point="simple.envs.sonic_loco_manip:SonicLocoManipEnv",
     kwargs={"task":"g1_wholebody_pick_and_place_and_hug_container_teleop"},
@@ -422,6 +434,26 @@ register(
     id="simple/G1WholebodyHandoverTeleop-v0",
     entry_point="simple.envs.sonic_loco_manip:SonicLocoManipEnv",
     kwargs={"task":"g1_wholebody_handover_teleop"},
+)
+register(
+    id="simple/G1WholebodyPickAndPlaceAppleTeleop-v0",
+    entry_point="simple.envs.sonic_loco_manip:SonicLocoManipEnv",
+    kwargs={"task":"g1_wholebody_pick_and_place_apple_teleop"},
+)
+register(
+    id="simple/G1WholebodyHandoverSimToRealTeleop-v0",
+    entry_point="simple.envs.sonic_loco_manip:SonicLocoManipEnv",
+    kwargs={"task":"g1_wholebody_handover_sim_to_real_teleop"},
+)
+register(
+    id="simple/G1WholebodyHandoverPlaceBackSimToRealTeleop-v0",
+    entry_point="simple.envs.sonic_loco_manip:SonicLocoManipEnv",
+    kwargs={"task":"g1_wholebody_handover_place_back_sim_to_real_teleop"},
+)
+register(
+    id="simple/G1WholebodyMobilePickAndPlaceCheezitTeleop-v0",
+    entry_point="simple.envs.sonic_loco_manip:SonicLocoManipEnv",
+    kwargs={"task":"g1_wholebody_mobile_pick_and_place_cheezit_teleop"},
 )
 
 register(
@@ -449,8 +481,21 @@ register(
     entry_point="simple.envs.sonic_loco_manip:SonicLocoManipEnv",
     kwargs={"task":"g1_wholebody_open_trash_can_teleop"},
 )
-
-
+register(
+    id="simple/G1WholebodyBendHandoverTeleop-v0",
+    entry_point="simple.envs.sonic_loco_manip:SonicLocoManipEnv",
+    kwargs={"task":"g1_wholebody_bend_handover_teleop"},
+)
+register(
+    id="simple/G1WholebodyBendPickAndPlaceTeleop-v0",
+    entry_point="simple.envs.sonic_loco_manip:SonicLocoManipEnv",
+    kwargs={"task":"g1_wholebody_bend_pick_and_place_teleop"},
+)
+register(
+    id="simple/G1WholebodyBendPickTeleop-v0",
+    entry_point="simple.envs.sonic_loco_manip:SonicLocoManipEnv",
+    kwargs={"task":"g1_wholebody_bend_pick_teleop"},
+)
 # def task_register(task):
 #     register(
 #         id="FrankaTabletopGrasp-v0",

@@ -58,7 +58,8 @@ class G1WholebodyOpenOvenTaskTeleop(Task):
         "reward_dt": 0.02,
         "image_dt": 0.033333,
         "need_gravity": True,
-        "max_episode_steps": 800,
+        "max_episode_steps": 1000,
+        "success_criteria": 0.5,
         # "debug": True
     }
 
@@ -92,7 +93,7 @@ class G1WholebodyOpenOvenTaskTeleop(Task):
         target=TargetDRCfg(asset_id="graspnet1b:12"),  # e.g., "primitive:cube"
         distractors=DistractorDRCfg(
             res_id="graspnet1b",
-            number_of_distractors=3,
+            number_of_distractors=0,
             allow_duplicates=False,
             exclude=["0"],  # Exclude the target object
         ),
@@ -102,11 +103,11 @@ class G1WholebodyOpenOvenTaskTeleop(Task):
         spatial=SpatialDRCfg(
             spatial_mode="random",
             robot_region=Box(low=[-0.9, 0, 0.0], high=[-1, 0.0, 0.0]),
-            target_region=Box(low=[0.3, -0.3], high=[0.5, -0.4]),
+            target_region=Box(low=[0.3, 3], high=[0.5, 4]),
             distractors_region=Box(low=[0.2, -0.3], high=[0.4, 0.3]),
             target_stable_indices=[0],
             target_rotate_z=Box(low=-0.15, high=0.15),
-            articulated_region=Box(low=[-0.1, -0.1,0.65], high=[-0.2, 0.1,0.65]),
+            articulated_region=Box(low=[0.1, -0.1,0.25], high=[0.2, 0.1,0.25]),
             articulated_rotate_z= Box(low=-0.12, high=0.12),
         ),
         camera=CameraDRCfg(
@@ -118,10 +119,10 @@ class G1WholebodyOpenOvenTaskTeleop(Task):
             # asset_id="primitive:table",
             # scene_mode="random", # fixed, random
             # table_size=Box(low=[1.4, 1.4, 0.1], high=[1.8, 1.8, 0.2]),  # Table dimensions
-            table_position=Box(low=[0.3, 0], high=[0.3, 0]),
+            table_position=Box(low=[0, 0], high=[0, 0]),
             # table_height=Box(low=0.0, high=0.0),
             # rotation_z=Box(low=0, high=3.14),  # Rotation around the Z-axis
-            table_height=Box(low=0.55, high=0.5),
+            table_height=Box(low=-0.1, high=0),
             room_choices=["hssd:scene1"],
             scene_manager="hssd",
         ),
@@ -129,7 +130,7 @@ class G1WholebodyOpenOvenTaskTeleop(Task):
             light_mode="random",  # fixed, random
             light_num=(2, 3),
             light_color_temperature=Box(low=2001, high=8001),  # I was not joking :)
-            light_intensity=Box(low=1e4, high=1e4),
+            light_intensity=Box(low=1e4*0.8, high=1e4*1.2),
             light_radius=Box(0.08, 0.12),
             light_length=Box(0.51, 1.1),
             light_spacing=Box((1.0, 1.0), (2.0, 2.0)),
@@ -151,7 +152,6 @@ class G1WholebodyOpenOvenTaskTeleop(Task):
         render_hz: int | None = None,
         dr_level: int = 0,
         # physics_dt: float = 0.002,
-        success_criteria: float = 0.9,
         *args,
         **kwargs,
     ):
@@ -170,7 +170,6 @@ class G1WholebodyOpenOvenTaskTeleop(Task):
         )
 
         self.reward = 0
-        self.success_criteria = success_criteria
 
         self._robot = RobotRegistry.make(**self.robot_cfg, **kwargs)
 
@@ -263,7 +262,7 @@ class G1WholebodyOpenOvenTaskTeleop(Task):
 
     def check_success(self, info: dict[str, Any], *args, **kwargs) -> bool:
         reward = self.compute_reward(info, *args, **kwargs)
-        return reward >= self.success_criteria
+        return reward >= self.metadata["success_criteria"]
     
     def check_wether_oven_is_opened(self, info: dict[str, Any], *args, **kwargs) -> bool:
         mujoco_env = kwargs.get("mujoco_env",None)
