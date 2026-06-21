@@ -355,7 +355,10 @@ class MujocoSimulator(Simulator):
 
 
         frame = mjWorld.add_frame(pos=actor.pose.position, quat=actor.pose.quaternion)
-        mjSpec.attach(articulated_object_mjcf, frame=frame)
+        # MIGRATED (MuJoCo 3.9): attach() now defaults to namespacing attached
+        # elements with a '/' prefix (e.g. '/torso_link'); 3.3.6 added no prefix.
+        # prefix="" restores the original names so all name lookups keep working.
+        mjSpec.attach(articulated_object_mjcf, frame=frame, prefix="")
         self.articulated_object_mjcf = articulated_object_mjcf
 
     # def _build_articulated_object(self, mjSpec, mjWorld, actor: ArticulatedObjectActor):
@@ -445,8 +448,10 @@ class MujocoSimulator(Simulator):
                 g.solref[:2] = [0.005, 1]
 
         self.robot_z = actor.pose.position[2]
-        frame=mjWorld.add_frame(pos=actor.pose.position,quat=actor.pose.quaternion) 
-        mjSpec.attach(robot_mjcf,frame=frame)
+        frame=mjWorld.add_frame(pos=actor.pose.position,quat=actor.pose.quaternion)
+        # MIGRATED (MuJoCo 3.9): prefix="" restores 3.3.6 no-prefix attach naming
+        # (3.9 defaults to a '/' namespace -> '/torso_link', breaking name lookups).
+        mjSpec.attach(robot_mjcf,frame=frame, prefix="")
 
         self.robot_mjcf = robot_mjcf
 
