@@ -94,20 +94,11 @@ class BaseDualSim(gym.Env):
         # Step 2: Enable WebRTC streaming if requested
         if webrtc:
             from isaacsim.core.utils.extensions import enable_extension  # MIGRATED: omni.isaac.core.utils.extensions
-            
-            # Determine Isaac Sim version and setup accordingly
-            try:
-                from isaacsim import util  # This exists in Isaac Sim 4.5.0+
-                # Isaac Sim 4.5.0+ behavior
-                _SIMULATION_APP.set_setting('/app/window/drawMouse', True)
-                enable_extension('omni.kit.livestream.webrtc')
-            except ImportError:
-                # Isaac Sim 4.2.0 behavior
-                _SIMULATION_APP.set_setting('/app/window/drawMouse', True)
-                _SIMULATION_APP.set_setting('/app/livestream/proto', 'ws')
-                _SIMULATION_APP.set_setting('/app/livestream/websocket/framerate_limit', 60)
-                _SIMULATION_APP.set_setting('/ngx/enabled', False)
-                enable_extension('omni.services.streamclient.webrtc')
+            # MIGRATED (5.1): only omni.kit.livestream.webrtc ships in 5.x; the old 4.2
+            # fallback (omni.services.streamclient.webrtc) is gone, and the `from isaacsim
+            # import util` version gate is unreliable. Keep only the 5.x webrtc path.
+            _SIMULATION_APP.set_setting('/app/window/drawMouse', True)
+            enable_extension('omni.kit.livestream.webrtc')
         _ISAAC_LOADED = True
 
     @property

@@ -713,7 +713,7 @@ class MujocoSimulator(Simulator):
                     out = renderer.render()[...,0]
                     panda_geom_ids = []
                     for geom_id in np.unique(out):
-                        if "panda" in self.mjModel.id2name(geom_id, 'geom'): # FIXME
+                        if "panda" in (mujoco.mj_id2name(self.mjModel, mujoco.mjtObj.mjOBJ_GEOM, geom_id) or ""):  # FIXED: model.id2name is not a MuJoCo API
                             panda_geom_ids.append(geom_id)
 
                     panda_mask = np.zeros_like(out, dtype=bool)

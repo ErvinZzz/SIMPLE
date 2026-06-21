@@ -91,6 +91,14 @@ class PickupRenderEnv(dm_env.Environment):
         self.room = room
         self.camera_resolution = camera_resolution
         self.save_depth = save_depth
+        # MIGRATED (5.1): isaacsim.sensors.camera attaches only the 'rgb' annotator at
+        # initialize(); the depth key is absent unless explicitly added.
+        if save_depth:
+            for _cam in self.room.cameras.values():
+                try:
+                    _cam.add_distance_to_image_plane_to_frame()
+                except Exception:
+                    pass
         self._cheat = None
         self._global_idx = 0
         # is_single_arm = self.room.task.robot.is_single_arm
@@ -156,7 +164,9 @@ class PickupRenderEnv(dm_env.Environment):
                 continue
 
             frame = camera.get_current_frame()
-            raw_rgb = frame['rgba'][..., :3].astype(np.uint8)
+            # MIGRATED (5.1): isaacsim.sensors.camera keys the frame by annotator name
+            # ('rgb'), not 'rgba'; use get_rgba() (same pattern as engines/isaacsim.py).
+            raw_rgb = camera.get_rgba()[..., :3].astype(np.uint8)
 
             """ # DEBUG add water mark
             raw_rgb = water_mark_idx(raw_rgb, self._global_idx) """

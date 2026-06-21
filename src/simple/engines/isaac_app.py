@@ -20,7 +20,7 @@ def create_simulation_app(
     SimulationApp,
     *,
     headless: bool,
-    renderer: str = "RayTracedLighting",
+    renderer: str = "RaytracedLighting",  # FIXED: canonical SimulationApp value (lowercase 't')
     width: int | None = None,
     height: int | None = None,
     anti_aliasing: int | None = None,

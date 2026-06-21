@@ -431,15 +431,18 @@ class IsaacSimSimulator(Simulator):
         for cname, cameraEntity in self.task.layout.cameras.items():
             p, q = cameraEntity.pose.position, cameraEntity.pose.quaternion
             isaacsim_camera = self.cameras[cname]
-            # isaacsim_camera.set_local_pose(p, [q[-1], q[0], q[1], q[2]]) # wxyz
-            isaacsim_camera.set_local_pose(p, q) # xyzw
+            # MIGRATED (5.1): isaacsim.sensors.camera.Camera.set_local_pose expects
+            # scalar-first (w,x,y,z); cameraEntity.pose.quaternion is xyzw -> reorder.
+            isaacsim_camera.set_local_pose(p, [q[-1], q[0], q[1], q[2]])  # wxyz
             isaacsim_camera.set_clipping_range(0.01, 10.0) # FIXME hardcoded
             isaacsim_camera.set_focal_length(cameraEntity.focal_length)
 
             horizontal_aperture = cameraEntity.focal_length * cameraEntity.resolution[0] / cameraEntity.fx
             vertical_aperture = cameraEntity.focal_length * cameraEntity.resolution[1] / cameraEntity.fy
-            isaacsim_camera.set_horizontal_aperture(horizontal_aperture)
-            isaacsim_camera.set_vertical_aperture(vertical_aperture)
+            # MIGRATED (5.1): the rewritten setters default maintain_square_pixels=True,
+            # which would silently force fx==fy; SIMPLE intends independent fx/fy.
+            isaacsim_camera.set_horizontal_aperture(horizontal_aperture, maintain_square_pixels=False)
+            isaacsim_camera.set_vertical_aperture(vertical_aperture, maintain_square_pixels=False)
             if cameraEntity.cam_cfg.intrinsics is not None:
                 W, H = cameraEntity.resolution
                 horizontal_offset = (cameraEntity.cx - 0.5 * W) * horizontal_aperture / W
