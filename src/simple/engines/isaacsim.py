@@ -382,7 +382,13 @@ class IsaacSimSimulator(Simulator):
                 UsdGeom.Xformable(scene_prim).AddScaleOp() # type: ignore
 
             # scene: HssdSuite = self.task.layout.scene
-            scene_prim.GetAttribute("xformOp:rotateXYZ").Set(tuple(scene.center_orientation))
+            # MIGRATED (OpenUSD 0.24.5 / IsaacSim 5.1): referencing the Y-up HSSD asset into
+            # the Z-up stage now auto-inserts xformOp:rotateX:unitsResolve (+90 about X),
+            # natively doing the Y-up->Z-up conversion (4.5's USD did not). center_orientation
+            # is (90, 0, yaw) where the 90-about-X WAS SIMPLE's manual up-axis conversion --
+            # now redundant and double-rotating the room (net Rx(180), flipped). Drop the X
+            # component and keep only the in-plane yaw (Z); let OpenUSD handle the up-axis.
+            scene_prim.GetAttribute("xformOp:rotateXYZ").Set((0.0, float(scene.center_orientation[1]), float(scene.center_orientation[2])))
 
             scale = scene.conf["scale"]
             scene_prim.GetAttribute("xformOp:scale").Set((scale, scale, scale))
@@ -399,7 +405,13 @@ class IsaacSimSimulator(Simulator):
             scale = scene.conf["scale"]
             scene_prim.GetAttribute("xformOp:scale").Set((scale, scale, scale))
             scene_prim.GetAttribute("xformOp:translate").Set((0,0,0))
-            scene_prim.GetAttribute("xformOp:rotateXYZ").Set(tuple(scene.center_orientation))
+            # MIGRATED (OpenUSD 0.24.5 / IsaacSim 5.1): referencing the Y-up HSSD asset into
+            # the Z-up stage now auto-inserts xformOp:rotateX:unitsResolve (+90 about X),
+            # natively doing the Y-up->Z-up conversion (4.5's USD did not). center_orientation
+            # is (90, 0, yaw) where the 90-about-X WAS SIMPLE's manual up-axis conversion --
+            # now redundant and double-rotating the room (net Rx(180), flipped). Drop the X
+            # component and keep only the in-plane yaw (Z); let OpenUSD handle the up-axis.
+            scene_prim.GetAttribute("xformOp:rotateXYZ").Set((0.0, float(scene.center_orientation[1]), float(scene.center_orientation[2])))
             surface_obb = self.calc_surface_center(surface_prim)
 
             if has_surface2:
@@ -431,12 +443,13 @@ class IsaacSimSimulator(Simulator):
         for cname, cameraEntity in self.task.layout.cameras.items():
             p, q = cameraEntity.pose.position, cameraEntity.pose.quaternion
             isaacsim_camera = self.cameras[cname]
-            # cameraEntity.pose.quaternion is ALREADY scalar-first wxyz (core/types.py),
-            # and isaacsim 5.1 Camera.set_local_pose expects wxyz with default
-            # camera_axes='world' (== the SIMPLE layout frame). The 4.5 code that scored
-            # 10/10 passed q straight through; a reorder here rolls every camera 180deg
-            # (head-cam identity [1,0,0,0] -> [0,1,0,0] = 180deg about X). Pass q as-is.
-            isaacsim_camera.set_local_pose(p, q)
+            # cameraEntity.pose.quaternion is scalar-first wxyz; 5.1 set_local_pose default
+            # camera_axes='world' is correct (verified: with the scene up-axis handled
+            # natively by OpenUSD's unitsResolve, 'world' reproduces the 4.5 reference obs;
+            # 'ros'/'usd' are wrong). The migration's earlier quaternion reorder was the bug
+            # (removed). Env override kept for debugging.
+            _cam_axes = os.environ.get("SIMPLE_CAM_AXES", "world")
+            isaacsim_camera.set_local_pose(p, q, camera_axes=_cam_axes)
             isaacsim_camera.set_clipping_range(0.01, 10.0) # FIXME hardcoded
             isaacsim_camera.set_focal_length(cameraEntity.focal_length)
 
