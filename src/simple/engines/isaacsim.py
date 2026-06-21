@@ -12,8 +12,8 @@ from typing import Dict, Tuple
 import carb
 import carb.settings
 import numpy as np
-import omni.isaac.core.utils.prims as isaacsim_prims
-import omni.isaac.core.utils.stage as isaacsim_stage
+import isaacsim.core.utils.prims as isaacsim_prims  # MIGRATED 4.5->5.1: omni.isaac.core.utils.prims
+import isaacsim.core.utils.stage as isaacsim_stage  # MIGRATED: omni.isaac.core.utils.stage
 import omni.kit.commands
 import omni.kit.primitive.mesh
 import omni.replicator.core as rep
@@ -21,16 +21,24 @@ import omni.usd
 import transforms3d as t3d
 from curobo.types.state import JointState
 from isaacsim.util.debug_draw import _debug_draw
-from omni.isaac.core.objects import GroundPlane, cuboid, sphere
-from omni.isaac.core.prims import GeometryPrim, RigidPrim, XFormPrim
-from omni.isaac.core.robots.robot import Robot as IsaacRobot
+from isaacsim.core.api.objects import GroundPlane, cuboid, sphere  # MIGRATED: omni.isaac.core.objects
+# MIGRATED: omni.isaac.core.prims.{GeometryPrim,RigidPrim,XFormPrim} were the SINGLE-prim
+# wrappers; in 5.x those classes are the tensorized/batched views, so the single-prim
+# wrappers are now Single*Prim (verified via the deprecation shim redirect). Alias to keep
+# the rest of this module's GeometryPrim/RigidPrim/XFormPrim usage unchanged.
+from isaacsim.core.prims import (
+    SingleGeometryPrim as GeometryPrim,
+    SingleRigidPrim as RigidPrim,
+    SingleXFormPrim as XFormPrim,
+)
+from isaacsim.core.api.robots.robot import Robot as IsaacRobot  # MIGRATED: omni.isaac.core.robots.robot
 
 from isaacsim.core.prims import SingleArticulation
-from omni.isaac.core.utils.prims import get_prim_at_path
-from omni.isaac.core.world.world import World
-# from omni.isaac.core.materials import VisualMaterial
-from omni.isaac.sensor import Camera as IssacCamera
-from omni.kit.material.library import create_mdl_material
+from isaacsim.core.utils.prims import get_prim_at_path  # MIGRATED: omni.isaac.core.utils.prims
+from isaacsim.core.api.world import World  # MIGRATED: omni.isaac.core.world.world
+# from isaacsim.core.api.materials import VisualMaterial
+from isaacsim.sensors.camera import Camera as IssacCamera  # MIGRATED: omni.isaac.sensor
+from omni.kit.material.library import create_mdl_material  # Kit ext (not renamed); verify survives Kit bump
 from pxr import Gf, Sdf, Semantics, Tf, Usd, UsdGeom, UsdPhysics, UsdShade
 from scipy.spatial.transform import Rotation
 
@@ -45,19 +53,8 @@ from simple.core.task import Task
 from simple.scenes.hssd import HssdSuite
 from simple.utils import env_flag, resolve_data_path
 
-# import isaacsim
-
-# from isaacsim.core.api.world.world import World
-# from isaacsim.core.api.robots.robot import Robot
-# from isaacsim.core.prims import RigidPrim, GeometryPrim, XFormPrim
-# from isaacsim.sensors.camera import Camera
-# import omni.replicator.core as rep
-# import carb.settings
-# import omni.usd
-# import omni.kit.commands
-
-# import isaacsim.core.utils.prims as isaacsim_prims
-# import isaacsim.core.utils.stage as isaacsim_stage
+# (removed stale half-done 5.x migration comment block — the live imports above are the
+#  verified IsaacSim 5.1 paths.)
 
 
      
@@ -803,7 +800,7 @@ class IsaacSimSimulator(Simulator):
         )
         self.articulated_objects[obj_name].set_enabled_self_collisions(False)
 
-        from omni.isaac.core.prims import GeometryPrim
+        from isaacsim.core.prims import SingleGeometryPrim as GeometryPrim  # MIGRATED
         from pxr import Usd
 
         articulation_prim = self.articulated_objects[obj_name].prim.GetParent()
@@ -953,8 +950,8 @@ class IsaacSimSimulator(Simulator):
         return render_products
     
     def calc_surface_center(self, surface_prim):
-        from omni.isaac.core.utils.bounds import (compute_combined_aabb,
-                                                  create_bbox_cache)
+        from isaacsim.core.utils.bounds import (compute_combined_aabb,
+                                                  create_bbox_cache)  # MIGRATED
         bb_cache = create_bbox_cache()
         centroid, axes, half_extent = compute_obb(bb_cache, surface_prim.GetPrimPath())
         larger_xy_extent = (half_extent[0], half_extent[1], half_extent[2])

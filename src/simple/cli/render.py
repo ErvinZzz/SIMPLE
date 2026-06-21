@@ -13,7 +13,7 @@ from simple.engines.isaac_app import create_simulation_app
 import typer
 from typing_extensions import Annotated
 import isaacsim
-from omni.isaac.kit import SimulationApp
+from isaacsim.simulation_app import SimulationApp  # MIGRATED: omni.isaac.kit
 simulation_app = create_simulation_app(SimulationApp, headless=False)
 
 import cv2

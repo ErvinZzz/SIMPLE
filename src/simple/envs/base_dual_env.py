@@ -80,7 +80,7 @@ class BaseDualSim(gym.Env):
         assert not _ISAAC_LOADED, "Isaac already loaded"
         _preload_native_runtime()
         import isaacsim
-        from omni.isaac.kit import SimulationApp # type: ignore
+        from isaacsim.simulation_app import SimulationApp # type: ignore  # MIGRATED: omni.isaac.kit
         from simple.engines.isaac_app import create_simulation_app
 
         # Step 1: Create SimulationApp
@@ -93,7 +93,7 @@ class BaseDualSim(gym.Env):
         
         # Step 2: Enable WebRTC streaming if requested
         if webrtc:
-            from omni.isaac.core.utils.extensions import enable_extension
+            from isaacsim.core.utils.extensions import enable_extension  # MIGRATED: omni.isaac.core.utils.extensions
             
             # Determine Isaac Sim version and setup accordingly
             try:

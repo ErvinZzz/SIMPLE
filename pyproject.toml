@@ -3,11 +3,11 @@ name = "simple"
 version = "0.1.0"
 description = "SIMPLE: SIMulation-based Policy Learning & Evaluation"
 readme = "README.md"
-requires-python = "==3.10.*"
+requires-python = "==3.11.*"
 dependencies = [
     "dm-control==1.0.21",
-    "isaacsim[all,extscache]==4.5.0",
-    "mujoco==3.3.6",
+    "isaacsim[all,extscache]==5.1.0",
+    "mujoco==3.9.0",
     #"nvidia-curobo",
     "openpi-client",
     "python-fcl>=0.7.0.8",
