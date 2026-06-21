@@ -580,6 +580,15 @@ class IsaacSimSimulator(Simulator):
         # change object pose
         obj_xform = XFormPrim(prim_path=obj["object_prim_path"])
         obj_xform.set_local_pose(obj_info.pose.position, obj_info.pose.quaternion)
+        # MIGRATED (OpenUSD 0.24.5 / IsaacSim 5.1): the graspnet asset is authored
+        # metersPerUnit=0.01 (cm); 5.1 auto-resolves units on reference and scales the
+        # object down ~1/0.01 (composed too small / invisible). 4.5's USD did not
+        # auto-resolve, so the cm-coords were taken as meters (real size). Counteract the
+        # units auto-resolve by scaling the root back up by 1/metersPerUnit = 100 to
+        # restore the 4.5 real-size object.
+        _objp = self.world.stage.GetPrimAtPath(obj["object_prim_path"])
+        if _objp and _objp.GetAttribute("xformOp:scale"):
+            _objp.GetAttribute("xformOp:scale").Set(Gf.Vec3d(100.0, 100.0, 100.0))
         obj_xform.set_visibility(True)
         # geom_prim_path = f'{obj["object_prim_path"]}/Meshes'
         # obj_geom = GeometryPrim(prim_path=geom_prim_path)
