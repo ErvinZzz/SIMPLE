@@ -1,0 +1,353 @@
+diff --git a/src/simple/engines/isaac_app.py b/src/simple/engines/isaac_app.py
+index 612e936..5146afb 100644
+--- a/src/simple/engines/isaac_app.py
++++ b/src/simple/engines/isaac_app.py
+@@ -37,6 +37,14 @@ def create_simulation_app(
+         settings.append((HYDRA_RENDER_COMPLETE, 1000, 1000))
+     if disable_throttling_async:
+         settings.append((THROTTLING_ENABLE_ASYNC, "false", False))
++    # FIX (IsaacSim 5.0): 5.0 defaults the Fabric Scene Delegate ON, and RTX then
++    # renders from Fabric. Runtime add_reference_to_stage'd object subtrees are not
++    # re-populated into Fabric -> they never render (GitHub isaac-sim/IsaacSim#227).
++    # SIMPLE uses IsaacSim purely for RENDERING (MuJoCo does physics; poses are
++    # written to USD each step), so switching back to the USD scene delegate makes
++    # everything (incl. the objects) render directly from USD. Env-gated for A/B.
++    if env_flag("SIMPLE_DISABLE_FSD", default=False):
++        settings.append(("/app/useFabricSceneDelegate", "false", False))
+     extra_args = [f"--{key}={arg_value}" for key, arg_value, _ in settings]
+ 
+     sim_cfg = _compact_dict({
+diff --git a/src/simple/engines/isaacsim.py b/src/simple/engines/isaacsim.py
+index 47563fc..56112be 100755
+--- a/src/simple/engines/isaacsim.py
++++ b/src/simple/engines/isaacsim.py
+@@ -31,7 +31,7 @@ from omni.isaac.core.world.world import World
+ # from omni.isaac.core.materials import VisualMaterial
+ from omni.isaac.sensor import Camera as IssacCamera
+ from omni.kit.material.library import create_mdl_material
+-from pxr import Gf, Sdf, Semantics, Tf, Usd, UsdGeom, UsdPhysics, UsdShade
++from pxr import Gf, PhysxSchema, Sdf, Semantics, Tf, Usd, UsdGeom, UsdPhysics, UsdShade
+ from scipy.spatial.transform import Rotation
+ 
+ import simple
+@@ -521,6 +521,106 @@ class IsaacSimSimulator(Simulator):
+         obj_collision_geom = GeometryPrim(f"{geom_prim_path}/collision")
+         obj_collision_geom.set_collision_enabled(False)
+ 
++        # FIX (IsaacSim 5.0): the GraspNet object USDs ship pre-authored, sub-mm
++        # convex collision pieces (e.g. dabao_sod / 038 has a Scope
++        # /Meshes/collision with collision_0..3, each carrying a tiny anisotropic
++        # xformOp:scale so the cooked world extent is ~0.2-0.7mm). PhysX 5.0's
++        # GPU-compatible convex *hull* cooker rejects these sub-mm hulls
++        # ("Unable to create convex mesh for .../collision_*"), so the object's
++        # collision is dropped -> it becomes non-physical -> falls through / is
++        # ejected -> the >=0.09m height success fires with NO real grasp
++        # (false positives). The earlier convexHull override was a no-op because
++        # the pieces ALREADY ship approximation=convexHull -- it re-set an
++        # identical value and the failing hull-with-tiny-scale cook path was
++        # unchanged.
++        #
++        # Robust fix: re-cook from the triangle geometry with an approximation
++        # that bakes the transform and re-meshes before cooking, which both SDF
++        # and convexDecomposition do (verified 0 cook errors on 038 in 5.0,
++        # whereas convexHull still emits 4 errors). We use convexDecomposition as
++        # the production path: it reproduces SIMPLE's 4.5 multi-convex contact
++        # geometry exactly (no boundingCube box, no grasp-accuracy loss), splits
++        # into GPU-valid <=60-vert sub-hulls, and -- unlike SDF -- needs neither
++        # GPU dynamics nor a dynamic rigid body (the target here is kinematic via
++        # disable_rigid_body_physics() above; SDF would silently fall back to CPU
++        # tri-mesh and GPU dynamics is broken under Warp on this Blackwell/driver).
++        # Set SIMPLE_COLLISION_APPROX=sdf to opt into SDF if GPU dynamics is fixed.
++        _approx = os.environ.get("SIMPLE_COLLISION_APPROX", "convexDecomposition")
++        _stage_fix = omni.usd.get_context().get_stage()
++        # Make the edit instanceable-robust even though these assets are not
++        # instanceable: clear any instanceable flag on the reference subtree so a
++        # plain PrimRange descends to the collision Mesh prims (instance proxies
++        # are read-only and cannot be edited).
++        _obj_root = _stage_fix.GetPrimAtPath(object_prim_path)
++        if _obj_root and _obj_root.IsValid():
++            for _p in Usd.PrimRange(_obj_root):
++                if _p.IsInstanceable():
++                    _p.SetInstanceable(False)
++        _col_root = _stage_fix.GetPrimAtPath(f"{geom_prim_path}/collision")
++        if _col_root and _col_root.IsValid():
++            for _p in Usd.PrimRange(_col_root):
++                if not _p.IsA(UsdGeom.Mesh):
++                    continue
++                # Drop any stale 4.5-era pre-cooked buffers so PhysX re-cooks
++                # fresh from the tri-mesh under the new approximation.
++                for _inst in ("convexDecomposition", "convexHull",
++                              "triangleMesh", "sdf"):
++                    if _p.HasAPI(PhysxSchema.PhysxCookedDataAPI, _inst):
++                        _p.RemoveAPI(PhysxSchema.PhysxCookedDataAPI, _inst)
++                UsdPhysics.CollisionAPI.Apply(_p)
++                PhysxSchema.PhysxCollisionAPI.Apply(_p)
++                _mc = UsdPhysics.MeshCollisionAPI.Apply(_p)
++                _mc.CreateApproximationAttr().Set(_approx)
++                if _approx == "sdf":
++                    _sdf = PhysxSchema.PhysxSDFMeshCollisionAPI.Apply(_p)
++                    _sdf.CreateSdfResolutionAttr().Set(256)
++                elif _approx == "convexDecomposition":
++                    _cd = PhysxSchema.PhysxConvexDecompositionCollisionAPI.Apply(_p)
++                    _cd.CreateMaxConvexHullsAttr().Set(32)
++                    _cd.CreateHullVertexLimitAttr().Set(60)
++                    _cd.CreateShrinkWrapAttr().Set(True)
++
++        # FIX (IsaacSim 5.0): the ruled.usd visual+collision geometry is authored
++        # sub-mm (~0.2-0.7mm world extent), but MuJoCo (the physics authority) uses
++        # the coacd .obj at TRUE scale (~15-22cm). So in the dual-sim the object is
++        # invisible in the IsaacSim-rendered OBSERVATION -> the policy can't see it
++        # and never grasps. Scale the object root so its world bbox matches the
++        # coacd collision extent (the size the policy was trained on). Auto-corrects
++        # per object; no-op when the object is already correctly sized.
++        try:
++            import numpy as _np
++            _vs = []
++            for _mf in (getattr(object_info.asset, "collision_meshes_mujoco", None) or [])[:16]:
++                try:
++                    with open(_mf) as _fh:
++                        for _ln in _fh:
++                            if _ln[:2] == "v ":
++                                _vs.append([float(x) for x in _ln.split()[1:4]])
++                except Exception:
++                    pass
++            if _vs:
++                _true_ext = _np.ptp(_np.array(_vs), axis=0)
++                _bbc = UsdGeom.BBoxCache(
++                    Usd.TimeCode.Default(),
++                    [UsdGeom.Tokens.default_, UsdGeom.Tokens.render, UsdGeom.Tokens.proxy])
++                _rng = _bbc.ComputeWorldBound(
++                    _stage_fix.GetPrimAtPath(geom_prim_path)).ComputeAlignedRange()
++                _cur = _np.array(_rng.GetSize(), dtype=float)
++                _cur[_cur < 1e-12] = 1e-12
++                _factor = float(_np.median(_true_ext / _cur))
++                if _factor > 2.0 or _factor < 0.5:
++                    try:
++                        _cs = _np.asarray(obj_xform.get_local_scale(), dtype=float).reshape(-1)[:3]
++                        if _cs.size < 3 or not _np.all(_np.isfinite(_cs)) or _np.any(_cs == 0):
++                            _cs = _np.ones(3)
++                    except Exception:
++                        _cs = _np.ones(3)
++                    obj_xform.set_local_scale(_cs * _factor)
++                    print(f"[scale-fix] {object_info.asset.label}: x{_factor:.1f} "
++                          f"true_ext={_true_ext.round(3)} cur_ext={_cur.round(5)}", flush=True)
++        except Exception as _e:
++            print(f"[scale-fix] skipped {getattr(object_info.asset,'label','?')}: {_e}", flush=True)
++
+         usd_prim = isaacsim_prims.get_prim_at_path(object_prim_path)
+         semantics=[("prim", f"{obj_id}")]
+         for semantic_type, semantic_value in semantics:
+@@ -570,6 +670,111 @@ class IsaacSimSimulator(Simulator):
+         # obj_geom.set_local_pose([0,0,0], [1,0,0,0]) # reset mesh local pose
+         obj["bActive"] = True
+ 
++        # DEBUG: report the object's ACTUAL rendered state at reset (world bbox =>
++        # size+position, scale, visibility) to diagnose "no object in IsaacSim".
++        if os.environ.get("SIMPLE_DEBUG_OBJ"):
++            try:
++                _st = omni.usd.get_context().get_stage()
++                _bbc = UsdGeom.BBoxCache(Usd.TimeCode.Default(),
++                                         [UsdGeom.Tokens.default_, UsdGeom.Tokens.render])
++                _rng = _bbc.ComputeWorldBound(
++                    _st.GetPrimAtPath(obj["object_prim_path"])).ComputeAlignedRange()
++                _mn = [round(x, 3) for x in _rng.GetMin()]
++                _mx = [round(x, 3) for x in _rng.GetMax()]
++                _sz = [round(_mx[i] - _mn[i], 4) for i in range(3)]
++                try:
++                    _sc = list(obj_xform.get_local_scale())
++                except Exception:
++                    _sc = "?"
++                print(f"[OBJ] {obj_name} pose={[round(x,3) for x in obj_info.pose.position]} "
++                      f"world_bbox_min={_mn} max={_mx} size={_sz} scale={_sc}", flush=True)
++                # camera vs object framing: is the object in any camera's view?
++                if obj_name == "target":
++                    _oc = [round((_mn[i] + _mx[i]) / 2, 3) for i in range(3)]
++                    print(f"[FRAME] object_center={_oc}", flush=True)
++                    # robot base orientation (frame-convention check vs mujoco)
++                    try:
++                        _ra = self.task.layout.actors.get("robot")
++                        if _ra is not None:
++                            print(f"[ROBOT] mujoco_pose pos={[round(float(x),3) for x in _ra.pose.position]} "
++                                  f"quat_wxyz={[round(float(x),3) for x in _ra.pose.quaternion]}", flush=True)
++                    except Exception as _e:
++                        print(f"[ROBOT] err {_e}", flush=True)
++                    _xc = UsdGeom.XformCache()
++                    for _cp in Usd.PrimRange(_st.GetPrimAtPath("/World")):
++                        if _cp.IsA(UsdGeom.Camera):
++                            import numpy as _npc
++                            _m = _xc.GetLocalToWorldTransform(_cp)
++                            _pos = list(_m.ExtractTranslation())
++                            _rot = _m.ExtractRotationMatrix()
++                            _fwd = [-_rot.GetRow(2)[k] for k in range(3)]  # camera looks down -Z
++                            _to = [_oc[k] - _pos[k] for k in range(3)]
++                            _dist = (sum(v*v for v in _to)) ** 0.5
++                            _dot = sum(_fwd[k]*_to[k] for k in range(3)) / (_dist + 1e-9)
++                            print(f"[CAM] {_cp.GetName()} pos={[round(x,2) for x in _pos]} "
++                                  f"fwd={[round(x,2) for x in _fwd]} dist={_dist:.2f} "
++                                  f"cos_to_obj={_dot:.2f} ({'IN-FRONT' if _dot>0.3 else 'OUT-OF-VIEW'})", flush=True)
++                # per-mesh render detail (why it may not render): type/vis/purpose/material
++                if obj_name == "target":
++                    from pxr import UsdShade as _USh
++                    _root = _st.GetPrimAtPath(obj["object_prim_path"])
++                    for _mp in Usd.PrimRange(_root):
++                        if _mp.IsA(UsdGeom.Mesh):
++                            _img = UsdGeom.Imageable(_mp)
++                            _vis = _img.ComputeVisibility()
++                            _pur = _img.ComputePurpose()
++                            _mat = _USh.MaterialBindingAPI(_mp).ComputeBoundMaterial()[0]
++                            _np_ = _mp.GetAttribute("points")
++                            _ptn = len(_np_.Get()) if _np_ and _np_.Get() else 0
++                            print(f"[MESH] {_mp.GetPath()} vis={_vis} purpose={_pur} "
++                                  f"pts={_ptn} mat={_mat.GetPath() if _mat else None}", flush=True)
++                            # extent vs points (stale extent => frustum cull)
++                            try:
++                                import numpy as _npx
++                                _pts = _np_.Get()
++                                _pa = _npx.array(_pts) if _pts else _npx.zeros((0, 3))
++                                _pmin = _pa.min(0).round(4).tolist() if len(_pa) else None
++                                _pmax = _pa.max(0).round(4).tolist() if len(_pa) else None
++                                _ext_attr = _mp.GetAttribute("extent")
++                                _ext = _ext_attr.Get() if _ext_attr else None
++                                _fvc = _mp.GetAttribute("faceVertexCounts")
++                                _nfaces = len(_fvc.Get()) if _fvc and _fvc.Get() else 0
++                                print(f"[EXT] {_mp.GetName()} pts_local_min={_pmin} max={_pmax} "
++                                      f"extent={[list(e) for e in _ext] if _ext else None} faces={_nfaces}", flush=True)
++                                # FIX attempt: recompute extent from points so the renderer
++                                # doesn't frustum-cull on a stale (sub-mm) extent.
++                                if os.environ.get("SIMPLE_FIX_EXTENT") and len(_pa):
++                                    from pxr import Vt as _Vt, Gf as _Gf2
++                                    _ne = _Vt.Vec3fArray([_Gf2.Vec3f(*_pa.min(0).tolist()),
++                                                          _Gf2.Vec3f(*_pa.max(0).tolist())])
++                                    _mp.GetAttribute("extent").Set(_ne)
++                                    print(f"[EXT-FIX] reset extent {_mp.GetName()}", flush=True)
++                            except Exception as _e:
++                                print(f"[EXT] err {_e}", flush=True)
++                            # DECISIVE TEST: bind a real UsdPreviewSurface (emissive
++                            # red) — RTX DOES render this (unlike bare displayColor).
++                            # If the object then appears, the graspnet MDL material was
++                            # failing to render under 5.0; if not, it's a deeper Hydra
++                            # population issue (object not submitted at all).
++                            if os.environ.get("SIMPLE_DEBUG_REDOBJ") and "visual" in str(_mp.GetPath()):
++                                try:
++                                    _mpath = obj["object_prim_path"] + "/DebugRedMat"
++                                    _mat = _USh.Material.Define(_st, _mpath)
++                                    _sh = _USh.Shader.Define(_st, _mpath + "/Shader")
++                                    _sh.CreateIdAttr("UsdPreviewSurface")
++                                    _sh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set((1.0, 0.0, 0.0))
++                                    _sh.CreateInput("emissiveColor", Sdf.ValueTypeNames.Color3f).Set((1.0, 0.0, 0.0))
++                                    _sh.CreateInput("opacity", Sdf.ValueTypeNames.Float).Set(1.0)
++                                    _mat.CreateSurfaceOutput().ConnectToSource(_sh.ConnectableAPI(), "surface")
++                                    _bapi = _USh.MaterialBindingAPI.Apply(_mp)
++                                    _bapi.UnbindAllBindings()
++                                    _bapi.Bind(_mat)
++                                    print(f"[REDMAT] bound UsdPreviewSurface red to {_mp.GetPath()}", flush=True)
++                                except Exception as _e:
++                                    print(f"[REDMAT] err {_e}", flush=True)
++            except Exception as _e:
++                print(f"[OBJ] debug err: {_e}", flush=True)
++
+         # # disable physics for now
+         # obj_rigid = RigidPrim(prim_path=geom_prim_path)
+         # obj_rigid.disable_rigid_body_physics()
+@@ -609,6 +814,39 @@ class IsaacSimSimulator(Simulator):
+             self.robot.set_world_pose(robo_position, robo_actor.pose.quaternion)
+             # self.world.physics_sim_view.flush()
+ 
++            # FIX (dual-sim): sync OBJECT visuals from MuJoCo (the physics authority)
++            # every step, exactly like the robot above. The original object sync was
++            # commented out (see `# self.__update_object()` in this method), so the
++            # IsaacSim object stayed frozen at its reset pose and never appeared where
++            # MuJoCo actually placed it (e.g. resting on the table / lifted by the
++            # gripper) -> the policy's egocentric camera never saw the object. MuJoCo
++            # writes the live object pose into the layout actors each step
++            # (mujoco.py: actors[name].pose.position/quaternion = mj_obj.xpos/xquat).
++            for _on, _oi in self.task.layout.actors.items():
++                _lab = getattr(getattr(_oi, "asset", None), "label", None)
++                if _lab in self.objects and self.objects[_lab].get("bActive"):
++                    try:
++                        # DECISIVE render test: float EVERY active object into open
++                        # space in front of the third-person camera. If a red box
++                        # appears -> render works (placement/occlusion); if not ->
++                        # genuine render bug. Log the read-back world pose to confirm
++                        # the move actually applied.
++                        if os.environ.get("SIMPLE_OBJ_FLOAT"):
++                            _fp = XFormPrim(self.objects[_lab]["object_prim_path"])
++                            _fp.set_world_pose([1.5, 0.0, 1.0], [1.0, 0.0, 0.0, 0.0])
++                            if not self.objects[_lab].get("_floated_logged"):
++                                self.objects[_lab]["_floated_logged"] = True
++                                try:
++                                    _rb = _fp.get_world_pose()
++                                    print(f"[FLOAT] {_lab} set->[1.5,0,1.0] readback={[round(float(x),3) for x in _rb[0]]}", flush=True)
++                                except Exception as _e:
++                                    print(f"[FLOAT] {_lab} readback err {_e}", flush=True)
++                        else:
++                            XFormPrim(self.objects[_lab]["object_prim_path"]).set_world_pose(
++                                _oi.pose.position, _oi.pose.quaternion)
++                    except Exception:
++                        pass
++
+ 
+             # set articulated objects to initial pose if articulated objects is not empty
+             if self.articulated_objects:
+diff --git a/src/simple/engines/mujoco.py b/src/simple/engines/mujoco.py
+index 15889b1..917b0ae 100644
+--- a/src/simple/engines/mujoco.py
++++ b/src/simple/engines/mujoco.py
+@@ -265,6 +265,15 @@ class MujocoSimulator(Simulator):
+         if (hasattr(self, "renderers") and len(self.renderers) > 0):
+             self.close()
+ 
++        # MuJoCo's default offscreen framebuffer is 640x480; bump it to the largest
++        # requested camera resolution so high-res cameras (e.g. 1280x720) can render
++        # ("Image width N > framebuffer width 640" otherwise).
++        if self.task.layout.cameras:
++            _max_w = max(c.resolution[0] for c in self.task.layout.cameras.values())
++            _max_h = max(c.resolution[1] for c in self.task.layout.cameras.values())
++            self.mjModel.vis.global_.offwidth = max(self.mjModel.vis.global_.offwidth, _max_w)
++            self.mjModel.vis.global_.offheight = max(self.mjModel.vis.global_.offheight, _max_h)
++
+         self.renderers = {}
+         for cname, camera in self.task.layout.cameras.items():
+             self.renderers[cname] = mujoco.Renderer(
+diff --git a/src/simple/tasks/g1_wholebody_bend_pick_mp.py b/src/simple/tasks/g1_wholebody_bend_pick_mp.py
+index 7791e65..1908bf8 100644
+--- a/src/simple/tasks/g1_wholebody_bend_pick_mp.py
++++ b/src/simple/tasks/g1_wholebody_bend_pick_mp.py
+@@ -66,8 +66,8 @@ class G1WholebodyBendPickMP(Task):
+         front_stereo=StereoCameraCfg(
+             uid="Realsense_D415",
+             mount="eye_on_base",
+-            width=640,
+-            height=360,
++            width=1280,
++            height=720,
+             focal_length=1.88,
+             fov=np.deg2rad(71.28),
+             near=0.2,
+@@ -111,8 +111,8 @@ class G1WholebodyBendPickMP(Task):
+         head_stereo=StereoCameraCfg(
+             uid="Realsense_D435i",
+             mount="eye_in_head",
+-            width=640,
+-            height=360,
++            width=1280,
++            height=720,
+             focal_length=1.93,
+             fov=np.deg2rad(110),
+             near=0.2,
+@@ -324,6 +324,15 @@ class G1WholebodyBendPickMP(Task):
+         reward = np.clip(
+             (target_obj_height - self._init_target_height) / _LIFT_HEIGHT, 0, 1
+         )
++        import os as _os
++        if _os.environ.get("SIMPLE_DEBUG_REWARD"):
++            try:
++                _txyz = [round(float(v), 4) for v in info["target"][:3]]
++            except Exception:
++                _txyz = info.get("target")
++            print(f"[REWARD] mujoco_target_xyz={_txyz} h={target_obj_height:.4f} "
++                  f"init={self._init_target_height:.4f} "
++                  f"rise={target_obj_height - self._init_target_height:+.4f} reward={reward:.3f}", flush=True)
+         return reward
+ 
+     def preload_objects(self) -> list[Actor]:

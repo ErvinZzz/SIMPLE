@@ -265,6 +265,15 @@ class MujocoSimulator(Simulator):
         if (hasattr(self, "renderers") and len(self.renderers) > 0):
             self.close()
 
+        # MuJoCo's default offscreen framebuffer is 640x480; bump it to the largest
+        # requested camera resolution so high-res cameras (e.g. 1280x720) can render
+        # ("Image width N > framebuffer width 640" otherwise).
+        if self.task.layout.cameras:
+            _max_w = max(c.resolution[0] for c in self.task.layout.cameras.values())
+            _max_h = max(c.resolution[1] for c in self.task.layout.cameras.values())
+            self.mjModel.vis.global_.offwidth = max(self.mjModel.vis.global_.offwidth, _max_w)
+            self.mjModel.vis.global_.offheight = max(self.mjModel.vis.global_.offheight, _max_h)
+
         self.renderers = {}
         for cname, camera in self.task.layout.cameras.items():
             self.renderers[cname] = mujoco.Renderer(
@@ -355,10 +364,7 @@ class MujocoSimulator(Simulator):
 
 
         frame = mjWorld.add_frame(pos=actor.pose.position, quat=actor.pose.quaternion)
-        # MIGRATED (MuJoCo 3.9): attach() now defaults to namespacing attached
-        # elements with a '/' prefix (e.g. '/torso_link'); 3.3.6 added no prefix.
-        # prefix="" restores the original names so all name lookups keep working.
-        mjSpec.attach(articulated_object_mjcf, frame=frame, prefix="")
+        mjSpec.attach(articulated_object_mjcf, frame=frame)
         self.articulated_object_mjcf = articulated_object_mjcf
 
     # def _build_articulated_object(self, mjSpec, mjWorld, actor: ArticulatedObjectActor):
@@ -448,10 +454,8 @@ class MujocoSimulator(Simulator):
                 g.solref[:2] = [0.005, 1]
 
         self.robot_z = actor.pose.position[2]
-        frame=mjWorld.add_frame(pos=actor.pose.position,quat=actor.pose.quaternion)
-        # MIGRATED (MuJoCo 3.9): prefix="" restores 3.3.6 no-prefix attach naming
-        # (3.9 defaults to a '/' namespace -> '/torso_link', breaking name lookups).
-        mjSpec.attach(robot_mjcf,frame=frame, prefix="")
+        frame=mjWorld.add_frame(pos=actor.pose.position,quat=actor.pose.quaternion) 
+        mjSpec.attach(robot_mjcf,frame=frame)
 
         self.robot_mjcf = robot_mjcf
 
@@ -718,7 +722,7 @@ class MujocoSimulator(Simulator):
                     out = renderer.render()[...,0]
                     panda_geom_ids = []
                     for geom_id in np.unique(out):
-                        if "panda" in (mujoco.mj_id2name(self.mjModel, mujoco.mjtObj.mjOBJ_GEOM, geom_id) or ""):  # FIXED: model.id2name is not a MuJoCo API
+                        if "panda" in self.mjModel.id2name(geom_id, 'geom'): # FIXME
                             panda_geom_ids.append(geom_id)
 
                     panda_mask = np.zeros_like(out, dtype=bool)

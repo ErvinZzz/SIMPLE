@@ -35,9 +35,32 @@ def main(
     upsample_factor = 1 # default
     # Load dataset
     if data_format == "lerobot":
-        from lerobot.datasets.lerobot_dataset import LeRobotDataset
         from simple.datasets.lerobot import get_episode_lerobot as get_episode
-        dataset = LeRobotDataset(repo_id=env_id, root=data_dir, video_backend="pyav")
+        # Load LOCAL parquet directly (same path the eval env_runner uses) so replay works
+        # offline without a HuggingFace-hub round-trip; fall back to hub-backed LeRobotDataset.
+        try:
+            from simple.evals.env_runner import _LocalLeRobotDataset
+            import numpy as _np, torch as _torch
+            class _TorchLocalLeRobot(_LocalLeRobotDataset):
+                # EpisodeExtractor calls .numpy() on frame fields (expects torch tensors,
+                # as the hub LeRobotDataset returns); the local pandas loader yields numpy
+                # arrays. Convert numeric array fields to torch so the accessors work.
+                def __getitem__(self, idx):
+                    frame = super().__getitem__(idx)
+                    out = {}
+                    for k, v in frame.items():
+                        if isinstance(v, _np.ndarray):
+                            try:
+                                out[k] = _torch.from_numpy(_np.ascontiguousarray(v))
+                                continue
+                            except Exception:
+                                pass
+                        out[k] = v
+                    return out
+            dataset = _TorchLocalLeRobot(env_id, data_dir)
+        except (FileNotFoundError, ImportError):
+            from lerobot.datasets.lerobot_dataset import LeRobotDataset
+            dataset = LeRobotDataset(repo_id=env_id, root=data_dir, video_backend="pyav")
         num_episodes = min(num_episodes, dataset.num_episodes - episode_start)
         dataset_fps = dataset.meta.fps
         if render_hz != dataset_fps:

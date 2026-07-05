@@ -20,7 +20,7 @@ def create_simulation_app(
     SimulationApp,
     *,
     headless: bool,
-    renderer: str = "RaytracedLighting",  # FIXED: canonical SimulationApp value (lowercase 't')
+    renderer: str = "RayTracedLighting",
     width: int | None = None,
     height: int | None = None,
     anti_aliasing: int | None = None,
@@ -37,6 +37,14 @@ def create_simulation_app(
         settings.append((HYDRA_RENDER_COMPLETE, 1000, 1000))
     if disable_throttling_async:
         settings.append((THROTTLING_ENABLE_ASYNC, "false", False))
+    # FIX (IsaacSim 5.0): 5.0 defaults the Fabric Scene Delegate ON, and RTX then
+    # renders from Fabric. Runtime add_reference_to_stage'd object subtrees are not
+    # re-populated into Fabric -> they never render (GitHub isaac-sim/IsaacSim#227).
+    # SIMPLE uses IsaacSim purely for RENDERING (MuJoCo does physics; poses are
+    # written to USD each step), so switching back to the USD scene delegate makes
+    # everything (incl. the objects) render directly from USD. Env-gated for A/B.
+    if env_flag("SIMPLE_DISABLE_FSD", default=False):
+        settings.append(("/app/useFabricSceneDelegate", "false", False))
     extra_args = [f"--{key}={arg_value}" for key, arg_value, _ in settings]
 
     sim_cfg = _compact_dict({

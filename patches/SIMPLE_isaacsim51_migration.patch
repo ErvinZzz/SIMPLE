@@ -1,0 +1,20 @@
+diff --git a/src/simple/engines/isaacsim.py b/src/simple/engines/isaacsim.py
+index cdd72e3..1c9ad64 100755
+--- a/src/simple/engines/isaacsim.py
++++ b/src/simple/engines/isaacsim.py
+@@ -431,9 +431,12 @@ class IsaacSimSimulator(Simulator):
+         for cname, cameraEntity in self.task.layout.cameras.items():
+             p, q = cameraEntity.pose.position, cameraEntity.pose.quaternion
+             isaacsim_camera = self.cameras[cname]
+-            # MIGRATED (5.1): isaacsim.sensors.camera.Camera.set_local_pose expects
+-            # scalar-first (w,x,y,z); cameraEntity.pose.quaternion is xyzw -> reorder.
+-            isaacsim_camera.set_local_pose(p, [q[-1], q[0], q[1], q[2]])  # wxyz
++            # cameraEntity.pose.quaternion is ALREADY scalar-first wxyz (core/types.py),
++            # and isaacsim 5.1 Camera.set_local_pose expects wxyz with default
++            # camera_axes='world' (== the SIMPLE layout frame). The 4.5 code that scored
++            # 10/10 passed q straight through; a reorder here rolls every camera 180deg
++            # (head-cam identity [1,0,0,0] -> [0,1,0,0] = 180deg about X). Pass q as-is.
++            isaacsim_camera.set_local_pose(p, q)
+             isaacsim_camera.set_clipping_range(0.01, 10.0) # FIXME hardcoded
+             isaacsim_camera.set_focal_length(cameraEntity.focal_length)
+ 

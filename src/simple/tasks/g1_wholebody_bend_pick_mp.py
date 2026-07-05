@@ -66,8 +66,8 @@ class G1WholebodyBendPickMP(Task):
         front_stereo=StereoCameraCfg(
             uid="Realsense_D415",
             mount="eye_on_base",
-            width=640,
-            height=360,
+            width=1280,
+            height=720,
             focal_length=1.88,
             fov=np.deg2rad(71.28),
             near=0.2,
@@ -111,8 +111,8 @@ class G1WholebodyBendPickMP(Task):
         head_stereo=StereoCameraCfg(
             uid="Realsense_D435i",
             mount="eye_in_head",
-            width=640,
-            height=360,
+            width=1280,
+            height=720,
             focal_length=1.93,
             fov=np.deg2rad(110),
             near=0.2,
@@ -324,6 +324,15 @@ class G1WholebodyBendPickMP(Task):
         reward = np.clip(
             (target_obj_height - self._init_target_height) / _LIFT_HEIGHT, 0, 1
         )
+        import os as _os
+        if _os.environ.get("SIMPLE_DEBUG_REWARD"):
+            try:
+                _txyz = [round(float(v), 4) for v in info["target"][:3]]
+            except Exception:
+                _txyz = info.get("target")
+            print(f"[REWARD] mujoco_target_xyz={_txyz} h={target_obj_height:.4f} "
+                  f"init={self._init_target_height:.4f} "
+                  f"rise={target_obj_height - self._init_target_height:+.4f} reward={reward:.3f}", flush=True)
         return reward
 
     def preload_objects(self) -> list[Actor]:

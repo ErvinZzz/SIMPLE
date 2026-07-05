@@ -12,8 +12,8 @@ from typing import Dict, Tuple
 import carb
 import carb.settings
 import numpy as np
-import isaacsim.core.utils.prims as isaacsim_prims  # MIGRATED 4.5->5.1: omni.isaac.core.utils.prims
-import isaacsim.core.utils.stage as isaacsim_stage  # MIGRATED: omni.isaac.core.utils.stage
+import omni.isaac.core.utils.prims as isaacsim_prims
+import omni.isaac.core.utils.stage as isaacsim_stage
 import omni.kit.commands
 import omni.kit.primitive.mesh
 import omni.replicator.core as rep
@@ -21,25 +21,17 @@ import omni.usd
 import transforms3d as t3d
 from curobo.types.state import JointState
 from isaacsim.util.debug_draw import _debug_draw
-from isaacsim.core.api.objects import GroundPlane, cuboid, sphere  # MIGRATED: omni.isaac.core.objects
-# MIGRATED: omni.isaac.core.prims.{GeometryPrim,RigidPrim,XFormPrim} were the SINGLE-prim
-# wrappers; in 5.x those classes are the tensorized/batched views, so the single-prim
-# wrappers are now Single*Prim (verified via the deprecation shim redirect). Alias to keep
-# the rest of this module's GeometryPrim/RigidPrim/XFormPrim usage unchanged.
-from isaacsim.core.prims import (
-    SingleGeometryPrim as GeometryPrim,
-    SingleRigidPrim as RigidPrim,
-    SingleXFormPrim as XFormPrim,
-)
-from isaacsim.core.api.robots.robot import Robot as IsaacRobot  # MIGRATED: omni.isaac.core.robots.robot
+from omni.isaac.core.objects import GroundPlane, cuboid, sphere
+from omni.isaac.core.prims import GeometryPrim, RigidPrim, XFormPrim
+from omni.isaac.core.robots.robot import Robot as IsaacRobot
 
 from isaacsim.core.prims import SingleArticulation
-from isaacsim.core.utils.prims import get_prim_at_path  # MIGRATED: omni.isaac.core.utils.prims
-from isaacsim.core.api.world import World  # MIGRATED: omni.isaac.core.world.world
-# from isaacsim.core.api.materials import VisualMaterial
-from isaacsim.sensors.camera import Camera as IssacCamera  # MIGRATED: omni.isaac.sensor
-from omni.kit.material.library import create_mdl_material  # Kit ext (not renamed); verify survives Kit bump
-from pxr import Gf, Sdf, Semantics, Tf, Usd, UsdGeom, UsdPhysics, UsdShade
+from omni.isaac.core.utils.prims import get_prim_at_path
+from omni.isaac.core.world.world import World
+# from omni.isaac.core.materials import VisualMaterial
+from omni.isaac.sensor import Camera as IssacCamera
+from omni.kit.material.library import create_mdl_material
+from pxr import Gf, PhysxSchema, Sdf, Semantics, Tf, Usd, UsdGeom, UsdPhysics, UsdShade
 from scipy.spatial.transform import Rotation
 
 import simple
@@ -53,8 +45,19 @@ from simple.core.task import Task
 from simple.scenes.hssd import HssdSuite
 from simple.utils import env_flag, resolve_data_path
 
-# (removed stale half-done 5.x migration comment block — the live imports above are the
-#  verified IsaacSim 5.1 paths.)
+# import isaacsim
+
+# from isaacsim.core.api.world.world import World
+# from isaacsim.core.api.robots.robot import Robot
+# from isaacsim.core.prims import RigidPrim, GeometryPrim, XFormPrim
+# from isaacsim.sensors.camera import Camera
+# import omni.replicator.core as rep
+# import carb.settings
+# import omni.usd
+# import omni.kit.commands
+
+# import isaacsim.core.utils.prims as isaacsim_prims
+# import isaacsim.core.utils.stage as isaacsim_stage
 
 
      
@@ -252,7 +255,28 @@ class IsaacSimSimulator(Simulator):
             "/exts/isaacsim.core.throttling/enable_async",
             not disable_throttling_async,
         )
-        rep.settings.set_render_rtx_realtime()
+        if _os_env_pt := __import__("os").environ.get("SIMPLE_PATHTRACE"):
+            # [debug] physically-correct reference renderer — bisects realtime-mode
+            # approximation defects from scene-data defects.
+            rep.settings.set_render_pathtraced(samples_per_pixel=32)
+            print("[mat-debug] PATH-TRACED reference mode", flush=True)
+        else:
+            rep.settings.set_render_rtx_realtime()
+        # --- migration lighting fix (not in the port patch): IsaacSim 5.1 RTX renders brighter
+        # than the 4.5 reference; match exposure to the dataset via filmIso (env SIMPLE_FILM_ISO,
+        # default 85) + ACES tonemap op=6 (the curve matching the reference highlights).
+        import os as _os
+        _stg = carb.settings.get_settings()
+        if not _os.environ.get("SIMPLE_TONEMAP_DEFAULT"):
+            _stg.set_int("/rtx/post/tonemap/op", 6)
+            _stg.set_float("/rtx/post/tonemap/filmIso", float(_os.environ.get("SIMPLE_FILM_ISO", "85")))
+        else:
+            print("[mat-debug] tonemap overrides SKIPPED (kit defaults)", flush=True)
+        if _os.environ.get("SIMPLE_NO_TEXSTREAM"):
+            # [5.x-test] rule out texture streaming keeping MDL texture maps at a pale
+            # low-res mip in large scenes (materials render correctly in small stages).
+            _stg.set_bool("/rtx-transient/resourcemanager/enableTextureStreaming", False)
+            print("[mat-debug] texture streaming DISABLED", flush=True)
         # rep.orchestrator.set_capture_on_play(False) # Data will be captured manually using step
         # carb.settings.get_settings().set_bool("/omni/replicator/captureMotionBlur", 0)
         # carb.settings.get_settings().set_bool("/rtx/post/motionblur/enabled", 0)   
@@ -324,6 +348,19 @@ class IsaacSimSimulator(Simulator):
         self.add_cameras()
         self.add_lights()
 
+        # MIGRATION FIX (IsaacSim 5.1 / pxr 0.24.5): omni.usd's is_usd_crate_file passes an
+        # Ar.ResolvedPath to Sdf.FileFormat.GetFileExtension/CanRead, which now require a
+        # std::string -> Boost.Python.ArgumentError when AddReference validates object USDs.
+        # Monkeypatch it to coerce to str (applied once, after Isaac/omni.usd is live).
+        try:
+            import omni.usd._impl.utils as _ouu
+            if not getattr(_ouu, "_simple_crate_str_patch", False):
+                _orig_crate = _ouu.is_usd_crate_file
+                _ouu.is_usd_crate_file = lambda fp: _orig_crate(str(fp)) if fp else _orig_crate(fp)
+                _ouu._simple_crate_str_patch = True
+        except Exception as _e:  # noqa
+            print(f"[migration] usd-crate str patch skipped: {_e}", flush=True)
+
         self.__pre_add_objects()
         self.spheres = None
 
@@ -364,7 +401,7 @@ class IsaacSimSimulator(Simulator):
                 data_dir = resolve_data_path(scene.data_dir)
 
             env_url = os.path.abspath(f"{data_dir}/{scene.name}.usd")
-            isaacsim_stage.add_reference_to_stage(usd_path=env_url, prim_path=scene_prim_path)
+            self.__add_reference_direct(env_url, scene_prim_path)
             scene_prim = self.world.stage.GetPrimAtPath(scene_prim_path)
 
             surface_prim = self.world.stage.GetPrimAtPath(surface_prim_path)
@@ -382,13 +419,7 @@ class IsaacSimSimulator(Simulator):
                 UsdGeom.Xformable(scene_prim).AddScaleOp() # type: ignore
 
             # scene: HssdSuite = self.task.layout.scene
-            # MIGRATED (OpenUSD 0.24.5 / IsaacSim 5.1): referencing the Y-up HSSD asset into
-            # the Z-up stage now auto-inserts xformOp:rotateX:unitsResolve (+90 about X),
-            # natively doing the Y-up->Z-up conversion (4.5's USD did not). center_orientation
-            # is (90, 0, yaw) where the 90-about-X WAS SIMPLE's manual up-axis conversion --
-            # now redundant and double-rotating the room (net Rx(180), flipped). Drop the X
-            # component and keep only the in-plane yaw (Z); let OpenUSD handle the up-axis.
-            scene_prim.GetAttribute("xformOp:rotateXYZ").Set((0.0, float(scene.center_orientation[1]), float(scene.center_orientation[2])))
+            scene_prim.GetAttribute("xformOp:rotateXYZ").Set(tuple(scene.center_orientation))
 
             scale = scene.conf["scale"]
             scene_prim.GetAttribute("xformOp:scale").Set((scale, scale, scale))
@@ -405,13 +436,7 @@ class IsaacSimSimulator(Simulator):
             scale = scene.conf["scale"]
             scene_prim.GetAttribute("xformOp:scale").Set((scale, scale, scale))
             scene_prim.GetAttribute("xformOp:translate").Set((0,0,0))
-            # MIGRATED (OpenUSD 0.24.5 / IsaacSim 5.1): referencing the Y-up HSSD asset into
-            # the Z-up stage now auto-inserts xformOp:rotateX:unitsResolve (+90 about X),
-            # natively doing the Y-up->Z-up conversion (4.5's USD did not). center_orientation
-            # is (90, 0, yaw) where the 90-about-X WAS SIMPLE's manual up-axis conversion --
-            # now redundant and double-rotating the room (net Rx(180), flipped). Drop the X
-            # component and keep only the in-plane yaw (Z); let OpenUSD handle the up-axis.
-            scene_prim.GetAttribute("xformOp:rotateXYZ").Set((0.0, float(scene.center_orientation[1]), float(scene.center_orientation[2])))
+            scene_prim.GetAttribute("xformOp:rotateXYZ").Set(tuple(scene.center_orientation))
             surface_obb = self.calc_surface_center(surface_prim)
 
             if has_surface2:
@@ -443,22 +468,15 @@ class IsaacSimSimulator(Simulator):
         for cname, cameraEntity in self.task.layout.cameras.items():
             p, q = cameraEntity.pose.position, cameraEntity.pose.quaternion
             isaacsim_camera = self.cameras[cname]
-            # cameraEntity.pose.quaternion is scalar-first wxyz; 5.1 set_local_pose default
-            # camera_axes='world' is correct (verified: with the scene up-axis handled
-            # natively by OpenUSD's unitsResolve, 'world' reproduces the 4.5 reference obs;
-            # 'ros'/'usd' are wrong). The migration's earlier quaternion reorder was the bug
-            # (removed). Env override kept for debugging.
-            _cam_axes = os.environ.get("SIMPLE_CAM_AXES", "world")
-            isaacsim_camera.set_local_pose(p, q, camera_axes=_cam_axes)
+            # isaacsim_camera.set_local_pose(p, [q[-1], q[0], q[1], q[2]]) # wxyz
+            isaacsim_camera.set_local_pose(p, q) # xyzw
             isaacsim_camera.set_clipping_range(0.01, 10.0) # FIXME hardcoded
             isaacsim_camera.set_focal_length(cameraEntity.focal_length)
 
             horizontal_aperture = cameraEntity.focal_length * cameraEntity.resolution[0] / cameraEntity.fx
             vertical_aperture = cameraEntity.focal_length * cameraEntity.resolution[1] / cameraEntity.fy
-            # MIGRATED (5.1): the rewritten setters default maintain_square_pixels=True,
-            # which would silently force fx==fy; SIMPLE intends independent fx/fy.
-            isaacsim_camera.set_horizontal_aperture(horizontal_aperture, maintain_square_pixels=False)
-            isaacsim_camera.set_vertical_aperture(vertical_aperture, maintain_square_pixels=False)
+            isaacsim_camera.set_horizontal_aperture(horizontal_aperture)
+            isaacsim_camera.set_vertical_aperture(vertical_aperture)
             if cameraEntity.cam_cfg.intrinsics is not None:
                 W, H = cameraEntity.resolution
                 horizontal_offset = (cameraEntity.cx - 0.5 * W) * horizontal_aperture / W
@@ -493,8 +511,16 @@ class IsaacSimSimulator(Simulator):
             light_prim.GetAttribute("xformOp:orient").Set(Gf.Quatd(1., 0., 0., 0.))
             light_prim.GetAttribute("inputs:radius").Set(light_info.light_radius)
             light_prim.GetAttribute("inputs:length").Set(light_info.light_length)
-            light_prim.GetAttribute("inputs:intensity").Set(light_info.light_intensity)
-            light_prim.GetAttribute("inputs:enableColorTemperature").Set(True)
+            # [5.x] optional global scale on the DR light intensity (UsdLux spec alignment in
+            # Kit 107 changed area-light energy semantics vs the 4.5 data-generation renderer).
+            _lscale = float(os.environ.get("SIMPLE_LIGHT_SCALE", "1.0"))
+            light_prim.GetAttribute("inputs:intensity").Set(light_info.light_intensity * _lscale)
+            if os.environ.get("SIMPLE_LIGHT_NORMALIZE"):
+                # UsdLux power normalization — the spec semantic that changed between the
+                # 4.5-era renderer and Kit 107 (divides emitted power by surface area).
+                light_prim.GetAttribute("inputs:normalize").Set(True)
+            light_prim.GetAttribute("inputs:enableColorTemperature").Set(
+                not os.environ.get("SIMPLE_NO_COLORTEMP"))
             light_prim.GetAttribute("inputs:colorTemperature").Set(light_info.light_color_temperature)
 
     def __reset_objects(self):
@@ -509,6 +535,28 @@ class IsaacSimSimulator(Simulator):
     def __pre_add_objects(self):
         for obj in self.task.preload_objects():
             self.__create_object(obj.asset.label, obj)
+
+    def __add_reference_direct(self, usd_path, prim_path):
+        """Author a USD reference directly, bypassing isaacsim.core.utils.stage.
+        add_reference_to_stage's Isaac-5.0+ metrics-assembler branch.
+
+        MIGRATION (4.5 -> 5.0): add_reference_to_stage now unit-checks the layer and, for
+        divergent-unit assets (GraspNet ruled_models mpu=0.01, some HSSD scenes) vs the
+        mpu=1.0 stage, routes the reference through the omni.metrics.assembler "AddReference"
+        kit command. That command SILENTLY no-ops inside the full env-reset context (verified
+        via probe: no reference arc is authored, hasRefs=False, zero children), so the
+        object/scene subtree stays empty -> later prim access raises "Accessed invalid null
+        prim" or the Single* view wrap crashes ("needs to be created before wrapping as
+        view"). In a fresh stage the same call composes fine. The plain USD AddReference (the
+        4.5 behavior) composes deterministically; divergent-unit scale is corrected downstream
+        (object [scale-fix]).
+        """
+        stage = omni.usd.get_context().get_stage()
+        prim = stage.GetPrimAtPath(prim_path)
+        if not prim.IsValid():
+            prim = stage.DefinePrim(prim_path, "Xform")
+        prim.GetReferences().AddReference(usd_path)
+        return prim
 
     def __create_object(self, obj_key: str, object_info: ObjectActor):
         obj_id = object_info.uid # object_info["id"]
@@ -527,15 +575,119 @@ class IsaacSimSimulator(Simulator):
 
         object_usd_path = os.path.abspath(resolve_data_path(object_info.asset.usd_path,auto_download=True))
         
-        isaacsim_stage.add_reference_to_stage(usd_path=object_usd_path, prim_path=object_prim_path)
+        # MIGRATION (4.5->5.0): author the reference directly -- add_reference_to_stage's
+        # metrics-assembler branch no-ops for the divergent-unit GraspNet USDs mid-reset
+        # (see __add_reference_direct). The object [scale-fix] below corrects the units.
+        self.__add_reference_direct(object_usd_path, object_prim_path)
 
         obj_xform = XFormPrim(prim_path=object_prim_path)
+
         geom_prim_path = f'{object_prim_path}/Meshes'
         obj_geom = GeometryPrim(prim_path=geom_prim_path)
         obj_rigid = RigidPrim(prim_path=geom_prim_path)
         obj_rigid.disable_rigid_body_physics()
         obj_collision_geom = GeometryPrim(f"{geom_prim_path}/collision")
         obj_collision_geom.set_collision_enabled(False)
+
+        # FIX (IsaacSim 5.0): the GraspNet object USDs ship pre-authored, sub-mm
+        # convex collision pieces (e.g. dabao_sod / 038 has a Scope
+        # /Meshes/collision with collision_0..3, each carrying a tiny anisotropic
+        # xformOp:scale so the cooked world extent is ~0.2-0.7mm). PhysX 5.0's
+        # GPU-compatible convex *hull* cooker rejects these sub-mm hulls
+        # ("Unable to create convex mesh for .../collision_*"), so the object's
+        # collision is dropped -> it becomes non-physical -> falls through / is
+        # ejected -> the >=0.09m height success fires with NO real grasp
+        # (false positives). The earlier convexHull override was a no-op because
+        # the pieces ALREADY ship approximation=convexHull -- it re-set an
+        # identical value and the failing hull-with-tiny-scale cook path was
+        # unchanged.
+        #
+        # Robust fix: re-cook from the triangle geometry with an approximation
+        # that bakes the transform and re-meshes before cooking, which both SDF
+        # and convexDecomposition do (verified 0 cook errors on 038 in 5.0,
+        # whereas convexHull still emits 4 errors). We use convexDecomposition as
+        # the production path: it reproduces SIMPLE's 4.5 multi-convex contact
+        # geometry exactly (no boundingCube box, no grasp-accuracy loss), splits
+        # into GPU-valid <=60-vert sub-hulls, and -- unlike SDF -- needs neither
+        # GPU dynamics nor a dynamic rigid body (the target here is kinematic via
+        # disable_rigid_body_physics() above; SDF would silently fall back to CPU
+        # tri-mesh and GPU dynamics is broken under Warp on this Blackwell/driver).
+        # Set SIMPLE_COLLISION_APPROX=sdf to opt into SDF if GPU dynamics is fixed.
+        _approx = os.environ.get("SIMPLE_COLLISION_APPROX", "convexDecomposition")
+        _stage_fix = omni.usd.get_context().get_stage()
+        # Make the edit instanceable-robust even though these assets are not
+        # instanceable: clear any instanceable flag on the reference subtree so a
+        # plain PrimRange descends to the collision Mesh prims (instance proxies
+        # are read-only and cannot be edited).
+        _obj_root = _stage_fix.GetPrimAtPath(object_prim_path)
+        if _obj_root and _obj_root.IsValid():
+            for _p in Usd.PrimRange(_obj_root):
+                if _p.IsInstanceable():
+                    _p.SetInstanceable(False)
+        _col_root = _stage_fix.GetPrimAtPath(f"{geom_prim_path}/collision")
+        if _col_root and _col_root.IsValid():
+            for _p in Usd.PrimRange(_col_root):
+                if not _p.IsA(UsdGeom.Mesh):
+                    continue
+                # Drop any stale 4.5-era pre-cooked buffers so PhysX re-cooks
+                # fresh from the tri-mesh under the new approximation.
+                for _inst in ("convexDecomposition", "convexHull",
+                              "triangleMesh", "sdf"):
+                    if _p.HasAPI(PhysxSchema.PhysxCookedDataAPI, _inst):
+                        _p.RemoveAPI(PhysxSchema.PhysxCookedDataAPI, _inst)
+                UsdPhysics.CollisionAPI.Apply(_p)
+                PhysxSchema.PhysxCollisionAPI.Apply(_p)
+                _mc = UsdPhysics.MeshCollisionAPI.Apply(_p)
+                _mc.CreateApproximationAttr().Set(_approx)
+                if _approx == "sdf":
+                    _sdf = PhysxSchema.PhysxSDFMeshCollisionAPI.Apply(_p)
+                    _sdf.CreateSdfResolutionAttr().Set(256)
+                elif _approx == "convexDecomposition":
+                    _cd = PhysxSchema.PhysxConvexDecompositionCollisionAPI.Apply(_p)
+                    _cd.CreateMaxConvexHullsAttr().Set(32)
+                    _cd.CreateHullVertexLimitAttr().Set(60)
+                    _cd.CreateShrinkWrapAttr().Set(True)
+
+        # FIX (IsaacSim 5.0): the ruled.usd visual+collision geometry is authored
+        # sub-mm (~0.2-0.7mm world extent), but MuJoCo (the physics authority) uses
+        # the coacd .obj at TRUE scale (~15-22cm). So in the dual-sim the object is
+        # invisible in the IsaacSim-rendered OBSERVATION -> the policy can't see it
+        # and never grasps. Scale the object root so its world bbox matches the
+        # coacd collision extent (the size the policy was trained on). Auto-corrects
+        # per object; no-op when the object is already correctly sized.
+        try:
+            import numpy as _np
+            _vs = []
+            for _mf in (getattr(object_info.asset, "collision_meshes_mujoco", None) or [])[:16]:
+                try:
+                    with open(_mf) as _fh:
+                        for _ln in _fh:
+                            if _ln[:2] == "v ":
+                                _vs.append([float(x) for x in _ln.split()[1:4]])
+                except Exception:
+                    pass
+            if _vs:
+                _true_ext = _np.ptp(_np.array(_vs), axis=0)
+                _bbc = UsdGeom.BBoxCache(
+                    Usd.TimeCode.Default(),
+                    [UsdGeom.Tokens.default_, UsdGeom.Tokens.render, UsdGeom.Tokens.proxy])
+                _rng = _bbc.ComputeWorldBound(
+                    _stage_fix.GetPrimAtPath(geom_prim_path)).ComputeAlignedRange()
+                _cur = _np.array(_rng.GetSize(), dtype=float)
+                _cur[_cur < 1e-12] = 1e-12
+                _factor = float(_np.median(_true_ext / _cur))
+                if _factor > 2.0 or _factor < 0.5:
+                    try:
+                        _cs = _np.asarray(obj_xform.get_local_scale(), dtype=float).reshape(-1)[:3]
+                        if _cs.size < 3 or not _np.all(_np.isfinite(_cs)) or _np.any(_cs == 0):
+                            _cs = _np.ones(3)
+                    except Exception:
+                        _cs = _np.ones(3)
+                    obj_xform.set_local_scale(_cs * _factor)
+                    print(f"[scale-fix] {object_info.asset.label}: x{_factor:.1f} "
+                          f"true_ext={_true_ext.round(3)} cur_ext={_cur.round(5)}", flush=True)
+        except Exception as _e:
+            print(f"[scale-fix] skipped {getattr(object_info.asset,'label','?')}: {_e}", flush=True)
 
         usd_prim = isaacsim_prims.get_prim_at_path(object_prim_path)
         semantics=[("prim", f"{obj_id}")]
@@ -580,20 +732,116 @@ class IsaacSimSimulator(Simulator):
         # change object pose
         obj_xform = XFormPrim(prim_path=obj["object_prim_path"])
         obj_xform.set_local_pose(obj_info.pose.position, obj_info.pose.quaternion)
-        # MIGRATED (OpenUSD 0.24.5 / IsaacSim 5.1): the graspnet asset is authored
-        # metersPerUnit=0.01 (cm); 5.1 auto-resolves units on reference and scales the
-        # object down ~1/0.01 (composed too small / invisible). 4.5's USD did not
-        # auto-resolve, so the cm-coords were taken as meters (real size). Counteract the
-        # units auto-resolve by scaling the root back up by 1/metersPerUnit = 100 to
-        # restore the 4.5 real-size object.
-        _objp = self.world.stage.GetPrimAtPath(obj["object_prim_path"])
-        if _objp and _objp.GetAttribute("xformOp:scale"):
-            _objp.GetAttribute("xformOp:scale").Set(Gf.Vec3d(100.0, 100.0, 100.0))
         obj_xform.set_visibility(True)
         # geom_prim_path = f'{obj["object_prim_path"]}/Meshes'
         # obj_geom = GeometryPrim(prim_path=geom_prim_path)
         # obj_geom.set_local_pose([0,0,0], [1,0,0,0]) # reset mesh local pose
         obj["bActive"] = True
+
+        # DEBUG: report the object's ACTUAL rendered state at reset (world bbox =>
+        # size+position, scale, visibility) to diagnose "no object in IsaacSim".
+        if os.environ.get("SIMPLE_DEBUG_OBJ"):
+            try:
+                _st = omni.usd.get_context().get_stage()
+                _bbc = UsdGeom.BBoxCache(Usd.TimeCode.Default(),
+                                         [UsdGeom.Tokens.default_, UsdGeom.Tokens.render])
+                _rng = _bbc.ComputeWorldBound(
+                    _st.GetPrimAtPath(obj["object_prim_path"])).ComputeAlignedRange()
+                _mn = [round(x, 3) for x in _rng.GetMin()]
+                _mx = [round(x, 3) for x in _rng.GetMax()]
+                _sz = [round(_mx[i] - _mn[i], 4) for i in range(3)]
+                try:
+                    _sc = list(obj_xform.get_local_scale())
+                except Exception:
+                    _sc = "?"
+                print(f"[OBJ] {obj_name} pose={[round(x,3) for x in obj_info.pose.position]} "
+                      f"world_bbox_min={_mn} max={_mx} size={_sz} scale={_sc}", flush=True)
+                # camera vs object framing: is the object in any camera's view?
+                if obj_name == "target":
+                    _oc = [round((_mn[i] + _mx[i]) / 2, 3) for i in range(3)]
+                    print(f"[FRAME] object_center={_oc}", flush=True)
+                    # robot base orientation (frame-convention check vs mujoco)
+                    try:
+                        _ra = self.task.layout.actors.get("robot")
+                        if _ra is not None:
+                            print(f"[ROBOT] mujoco_pose pos={[round(float(x),3) for x in _ra.pose.position]} "
+                                  f"quat_wxyz={[round(float(x),3) for x in _ra.pose.quaternion]}", flush=True)
+                    except Exception as _e:
+                        print(f"[ROBOT] err {_e}", flush=True)
+                    _xc = UsdGeom.XformCache()
+                    for _cp in Usd.PrimRange(_st.GetPrimAtPath("/World")):
+                        if _cp.IsA(UsdGeom.Camera):
+                            import numpy as _npc
+                            _m = _xc.GetLocalToWorldTransform(_cp)
+                            _pos = list(_m.ExtractTranslation())
+                            _rot = _m.ExtractRotationMatrix()
+                            _fwd = [-_rot.GetRow(2)[k] for k in range(3)]  # camera looks down -Z
+                            _to = [_oc[k] - _pos[k] for k in range(3)]
+                            _dist = (sum(v*v for v in _to)) ** 0.5
+                            _dot = sum(_fwd[k]*_to[k] for k in range(3)) / (_dist + 1e-9)
+                            print(f"[CAM] {_cp.GetName()} pos={[round(x,2) for x in _pos]} "
+                                  f"fwd={[round(x,2) for x in _fwd]} dist={_dist:.2f} "
+                                  f"cos_to_obj={_dot:.2f} ({'IN-FRONT' if _dot>0.3 else 'OUT-OF-VIEW'})", flush=True)
+                # per-mesh render detail (why it may not render): type/vis/purpose/material
+                if obj_name == "target":
+                    from pxr import UsdShade as _USh
+                    _root = _st.GetPrimAtPath(obj["object_prim_path"])
+                    for _mp in Usd.PrimRange(_root):
+                        if _mp.IsA(UsdGeom.Mesh):
+                            _img = UsdGeom.Imageable(_mp)
+                            _vis = _img.ComputeVisibility()
+                            _pur = _img.ComputePurpose()
+                            _mat = _USh.MaterialBindingAPI(_mp).ComputeBoundMaterial()[0]
+                            _np_ = _mp.GetAttribute("points")
+                            _ptn = len(_np_.Get()) if _np_ and _np_.Get() else 0
+                            print(f"[MESH] {_mp.GetPath()} vis={_vis} purpose={_pur} "
+                                  f"pts={_ptn} mat={_mat.GetPath() if _mat else None}", flush=True)
+                            # extent vs points (stale extent => frustum cull)
+                            try:
+                                import numpy as _npx
+                                _pts = _np_.Get()
+                                _pa = _npx.array(_pts) if _pts else _npx.zeros((0, 3))
+                                _pmin = _pa.min(0).round(4).tolist() if len(_pa) else None
+                                _pmax = _pa.max(0).round(4).tolist() if len(_pa) else None
+                                _ext_attr = _mp.GetAttribute("extent")
+                                _ext = _ext_attr.Get() if _ext_attr else None
+                                _fvc = _mp.GetAttribute("faceVertexCounts")
+                                _nfaces = len(_fvc.Get()) if _fvc and _fvc.Get() else 0
+                                print(f"[EXT] {_mp.GetName()} pts_local_min={_pmin} max={_pmax} "
+                                      f"extent={[list(e) for e in _ext] if _ext else None} faces={_nfaces}", flush=True)
+                                # FIX attempt: recompute extent from points so the renderer
+                                # doesn't frustum-cull on a stale (sub-mm) extent.
+                                if os.environ.get("SIMPLE_FIX_EXTENT") and len(_pa):
+                                    from pxr import Vt as _Vt, Gf as _Gf2
+                                    _ne = _Vt.Vec3fArray([_Gf2.Vec3f(*_pa.min(0).tolist()),
+                                                          _Gf2.Vec3f(*_pa.max(0).tolist())])
+                                    _mp.GetAttribute("extent").Set(_ne)
+                                    print(f"[EXT-FIX] reset extent {_mp.GetName()}", flush=True)
+                            except Exception as _e:
+                                print(f"[EXT] err {_e}", flush=True)
+                            # DECISIVE TEST: bind a real UsdPreviewSurface (emissive
+                            # red) — RTX DOES render this (unlike bare displayColor).
+                            # If the object then appears, the graspnet MDL material was
+                            # failing to render under 5.0; if not, it's a deeper Hydra
+                            # population issue (object not submitted at all).
+                            if os.environ.get("SIMPLE_DEBUG_REDOBJ") and "visual" in str(_mp.GetPath()):
+                                try:
+                                    _mpath = obj["object_prim_path"] + "/DebugRedMat"
+                                    _mat = _USh.Material.Define(_st, _mpath)
+                                    _sh = _USh.Shader.Define(_st, _mpath + "/Shader")
+                                    _sh.CreateIdAttr("UsdPreviewSurface")
+                                    _sh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set((1.0, 0.0, 0.0))
+                                    _sh.CreateInput("emissiveColor", Sdf.ValueTypeNames.Color3f).Set((1.0, 0.0, 0.0))
+                                    _sh.CreateInput("opacity", Sdf.ValueTypeNames.Float).Set(1.0)
+                                    _mat.CreateSurfaceOutput().ConnectToSource(_sh.ConnectableAPI(), "surface")
+                                    _bapi = _USh.MaterialBindingAPI.Apply(_mp)
+                                    _bapi.UnbindAllBindings()
+                                    _bapi.Bind(_mat)
+                                    print(f"[REDMAT] bound UsdPreviewSurface red to {_mp.GetPath()}", flush=True)
+                                except Exception as _e:
+                                    print(f"[REDMAT] err {_e}", flush=True)
+            except Exception as _e:
+                print(f"[OBJ] debug err: {_e}", flush=True)
 
         # # disable physics for now
         # obj_rigid = RigidPrim(prim_path=geom_prim_path)
@@ -633,6 +881,39 @@ class IsaacSimSimulator(Simulator):
             # robo_position[2] += 0.055 # HACK fix for veag 1 base height
             self.robot.set_world_pose(robo_position, robo_actor.pose.quaternion)
             # self.world.physics_sim_view.flush()
+
+            # FIX (dual-sim): sync OBJECT visuals from MuJoCo (the physics authority)
+            # every step, exactly like the robot above. The original object sync was
+            # commented out (see `# self.__update_object()` in this method), so the
+            # IsaacSim object stayed frozen at its reset pose and never appeared where
+            # MuJoCo actually placed it (e.g. resting on the table / lifted by the
+            # gripper) -> the policy's egocentric camera never saw the object. MuJoCo
+            # writes the live object pose into the layout actors each step
+            # (mujoco.py: actors[name].pose.position/quaternion = mj_obj.xpos/xquat).
+            for _on, _oi in self.task.layout.actors.items():
+                _lab = getattr(getattr(_oi, "asset", None), "label", None)
+                if _lab in self.objects and self.objects[_lab].get("bActive"):
+                    try:
+                        # DECISIVE render test: float EVERY active object into open
+                        # space in front of the third-person camera. If a red box
+                        # appears -> render works (placement/occlusion); if not ->
+                        # genuine render bug. Log the read-back world pose to confirm
+                        # the move actually applied.
+                        if os.environ.get("SIMPLE_OBJ_FLOAT"):
+                            _fp = XFormPrim(self.objects[_lab]["object_prim_path"])
+                            _fp.set_world_pose([1.5, 0.0, 1.0], [1.0, 0.0, 0.0, 0.0])
+                            if not self.objects[_lab].get("_floated_logged"):
+                                self.objects[_lab]["_floated_logged"] = True
+                                try:
+                                    _rb = _fp.get_world_pose()
+                                    print(f"[FLOAT] {_lab} set->[1.5,0,1.0] readback={[round(float(x),3) for x in _rb[0]]}", flush=True)
+                                except Exception as _e:
+                                    print(f"[FLOAT] {_lab} readback err {_e}", flush=True)
+                        else:
+                            XFormPrim(self.objects[_lab]["object_prim_path"]).set_world_pose(
+                                _oi.pose.position, _oi.pose.quaternion)
+                    except Exception:
+                        pass
 
 
             # set articulated objects to initial pose if articulated objects is not empty
@@ -828,7 +1109,7 @@ class IsaacSimSimulator(Simulator):
         )
         self.articulated_objects[obj_name].set_enabled_self_collisions(False)
 
-        from isaacsim.core.prims import SingleGeometryPrim as GeometryPrim  # MIGRATED
+        from omni.isaac.core.prims import GeometryPrim
         from pxr import Usd
 
         articulation_prim = self.articulated_objects[obj_name].prim.GetParent()
@@ -920,6 +1201,13 @@ class IsaacSimSimulator(Simulator):
             self.cameras[cam_key] = camera
 
     def add_lights(self):
+        if _amb := os.environ.get("SIMPLE_AMBIENT_DOME"):
+            # [5.x-test] restore the 4.5-era implicit ambient stage lighting (removed in 5.x)
+            from pxr import UsdLux as _UL
+            _stage = omni.usd.get_context().get_stage()
+            _dome = _UL.DomeLight.Define(_stage, "/World/ambient_dome")
+            _dome.CreateIntensityAttr(float(_amb))
+            print(f"[mat-debug] ambient dome added, intensity={_amb}", flush=True)
         light_center = XFormPrim(f'{self.workspace_prim_path}/LightCenter')
 
         for light in self.task.layout.lights:
@@ -978,8 +1266,8 @@ class IsaacSimSimulator(Simulator):
         return render_products
     
     def calc_surface_center(self, surface_prim):
-        from isaacsim.core.utils.bounds import (compute_combined_aabb,
-                                                  create_bbox_cache)  # MIGRATED
+        from omni.isaac.core.utils.bounds import (compute_combined_aabb,
+                                                  create_bbox_cache)
         bb_cache = create_bbox_cache()
         centroid, axes, half_extent = compute_obb(bb_cache, surface_prim.GetPrimPath())
         larger_xy_extent = (half_extent[0], half_extent[1], half_extent[2])
@@ -1023,12 +1311,55 @@ class IsaacSimSimulator(Simulator):
         UsdPhysics.MeshCollisionAPI.Apply(prim)
 
         mat_info = getattr(table_box, 'material', None)
+        print(f"[mat-debug] _setup_table {prim_path}: mat_info={mat_info} pose={p} size={s}", flush=True)
+        if os.environ.get("SIMPLE_MAT_DEBUG_RED"):
+            # debug: no material, just a red displayColor — tells us whether THIS prim
+            # is the visible tabletop in the render.
+            UsdGeom.Gprim(prim).CreateDisplayColorAttr([Gf.Vec3f(1.0, 0.0, 0.0)])
+            print("[mat-debug] RED debug mode — skipping material bind", flush=True)
+            return
+        if os.environ.get("SIMPLE_MAT_TEST_OMNIPBR"):
+            # debug: built-in OmniPBR (no external mdl file) with a brown tint — tests
+            # whether in-session MDL authoring works at all in this render context.
+            looks_path = "/World/Looks"
+            if not stage.GetPrimAtPath(looks_path).IsValid():
+                stage.DefinePrim(looks_path, "Scope")
+            mp = omni.usd.get_stage_next_free_path(stage, f"{looks_path}/dbg_omnipbr", False)
+            m2 = UsdShade.Material.Define(stage, mp)
+            s2 = UsdShade.Shader.Define(stage, f"{mp}/Shader")
+            s2.CreateImplementationSourceAttr(UsdShade.Tokens.sourceAsset)
+            s2.SetSourceAsset(Sdf.AssetPath("OmniPBR.mdl"), "mdl")
+            s2.SetSourceAssetSubIdentifier("OmniPBR", "mdl")
+            s2.CreateInput("diffuse_color_constant", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0.35, 0.18, 0.06))
+            m2.CreateSurfaceOutput("mdl").ConnectToSource(s2.ConnectableAPI(), "out")
+            UsdShade.MaterialBindingAPI.Apply(prim).Bind(m2)
+            print("[mat-debug] OMNIPBR test bound (brown)", flush=True)
+            return
         if mat_info is None:
             return
         raw_path = mat_info['path']
         if not os.path.isabs(raw_path):
             raw_path = resolve_data_path(raw_path.removeprefix("data/"), auto_download=True)
-        created = [None]
-        create_mdl_material(stage, raw_path, mat_info['name'], lambda p: created.__setitem__(0, p))
-        if created[0] is not None:
-            UsdShade.MaterialBindingAPI.Apply(prim).Bind(UsdShade.Material(created[0]))
+        # [5.x-fix] Author the MDL material directly with plain USD instead of
+        # omni.kit.material.library.create_mdl_material: that helper is async (its
+        # callback fires on a later kit update), so checking its result immediately
+        # after the call silently skips the bind on Isaac 5.x and the table renders
+        # with the default gray material — a train/eval visual mismatch for image
+        # policies. Direct authoring is synchronous (same pattern as
+        # __add_reference_direct for references).
+        looks_path = "/World/Looks"
+        if not stage.GetPrimAtPath(looks_path).IsValid():
+            stage.DefinePrim(looks_path, "Scope")
+        mtl_path = omni.usd.get_stage_next_free_path(
+            stage, f"{looks_path}/{Tf.MakeValidIdentifier(mat_info['name'])}", False)
+        mtl = UsdShade.Material.Define(stage, mtl_path)
+        shader = UsdShade.Shader.Define(stage, f"{mtl_path}/Shader")
+        shader.CreateImplementationSourceAttr(UsdShade.Tokens.sourceAsset)
+        shader.SetSourceAsset(Sdf.AssetPath(raw_path), "mdl")
+        shader.SetSourceAssetSubIdentifier(mat_info['name'], "mdl")
+        mtl.CreateSurfaceOutput("mdl").ConnectToSource(shader.ConnectableAPI(), "out")
+        mtl.CreateDisplacementOutput("mdl").ConnectToSource(shader.ConnectableAPI(), "out")
+        mtl.CreateVolumeOutput("mdl").ConnectToSource(shader.ConnectableAPI(), "out")
+        UsdShade.MaterialBindingAPI.Apply(prim).Bind(mtl)
+        print(f"[mat-debug] bound {mtl_path} (asset={raw_path}, sub={mat_info['name']}, "
+              f"exists={os.path.isfile(raw_path)}) -> {prim_path}", flush=True)
