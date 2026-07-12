@@ -3,8 +3,9 @@
 This branch (`migrate/isaacsim-5.1-mujoco-3.9`) is the validated 4.5→5.1 port
 behind every published ScrewFlow/G1 number. VERIFIED 2026-07-12 against the
 production machine: all 468 tracked code files byte-identical to the working
-copy; gear_sonic & unitree_sdk2_python submodules exactly at their pins; AMO
-content-matched at its pin. One local delta, captured here as
+copy; ALL FOUR required submodules (gear_sonic, unitree_sdk2_python, AMO,
+decoupled_wbc) verified byte-identical to their pinned SHAs (2026-07-12; the
+two with stale gitdir pointers were rebuilt as standalone repos — zero drift). One local delta, captured here as
 `patches_gear_sonic_py311.patch` (gear_sonic pyproject requires-python
 `~=3.10.0` → `>=3.10` so it installs under py3.11 — apply after submodule init).
 
