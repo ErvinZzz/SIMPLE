@@ -21,6 +21,11 @@ Contributors: [Songlin Wei](https://songlin.github.io/)\*, [Zhenhao Ni](https://
 
 > 
 
+
+## 📢 News & Updates
++ [2026-07-14] We released support for World Action Models: Cosmos3 and DreamZero. 
++ [ ] Integrate SONIC whole-body controller.
+
 ## Table of Contents
 - [What is SIMPLE?](#what～is～SIMPLE)
 - [System Requirements](#system-requirements)
