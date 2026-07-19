@@ -5,11 +5,18 @@ Copyright (c) 2025 Songlin Wei and Contributors
 Licensed under the terms in LICENSE file.
 """
 
+import io
 import time
+import base64
 import numpy as np
+import requests
+from PIL import Image
+
 from simple.agents.sonic_decoupled_wbc_agent import SonicDecoupledWbcAgent
 from simple.core.action import ActionCmd
-from simple.baselines.client import HttpActionClient
+
+# Ego-frame resize target sent to the Cosmos server (matches cosmos_http_client.py).
+DEFAULT_IMAGE_SIZE = 256
 
 STATE_SLICES = [ # shoule be consistent with scripts/postprocess_psi0.py
     ("left_hand_thumb", 29, 32),
@@ -29,15 +36,73 @@ def from_psi0_upper_joints(psi0_action):
         psi0_action[7:14], # right hand
     ])
 
-class PsixDecoupledWbcAgent(SonicDecoupledWbcAgent):
-    def __init__(self, robot, host: str, port: int, upsample_factor=1, **kwargs):
+
+def _frame_to_png_b64(frame_rgb: np.ndarray) -> str:
+    """[H,W,3] uint8 RGB -> base64 PNG (matches cosmos_http_client._frame_to_png_b64)."""
+    buf = io.BytesIO()
+    Image.fromarray(np.ascontiguousarray(frame_rgb).astype(np.uint8)).save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+class CosmosPredictClient:
+    """HTTP client for the Cosmos action-policy server's ``/predict`` endpoint.
+
+    Mirrors ``cosmos_http_client.CosmosPolicyClient``: each ``predict()`` POSTs a
+    single ego frame + proprio state to ``/predict`` and returns the raw action
+    chunk as ``(T, D)`` float32. The payload is plain JSON (no numpy base64
+    serialization) — the image is a base64 PNG and the state is a flat float list.
+    """
+
+    def __init__(self, server_ip: str, server_port: int, domain_name: str = "g1_simple",
+                 image_size: int = DEFAULT_IMAGE_SIZE, view_point: str = "ego_view",
+                 timeout: int = 1200):
+        self._server = f"http://{server_ip}:{server_port}"
+        self._domain_name = domain_name
+        self._image_size = image_size
+        self._view_point = view_point
+        self._timeout = timeout
+
+    def info(self):
+        r = requests.get(self._server + "/info", timeout=30)
+        r.raise_for_status()
+        return r.json()
+
+    def predict(self, frame_rgb: np.ndarray, prompt: str, state, history: dict = {}) -> np.ndarray:
+        """POST ``/predict`` and return the predicted action chunk ``(T, D)`` float32.
+
+        frame_rgb: (H, W, 3) uint8 RGB ego frame.
+        prompt:    instruction string.
+        state:     proprio conditioning vector (flattened to a float list).
+        history:   dictionary containing additional information for the server (e.g., reset flag).
+        """
+        payload = {
+            "image": _frame_to_png_b64(frame_rgb),
+            "prompt": prompt,
+            "domain_name": self._domain_name,
+            "image_size": self._image_size,
+            "view_point": self._view_point,
+            "state": np.asarray(state, dtype=np.float32).reshape(-1).tolist(),
+            **history
+        }
+        resp = requests.post(self._server + "/predict", json=payload, timeout=self._timeout)
+        resp.raise_for_status()
+        data = resp.json()
+        return np.asarray(data["action"], dtype=np.float32)  # (T, D)
+
+
+class Cosmos3DecoupledWbcAgent(SonicDecoupledWbcAgent):
+    def __init__(self, robot, host: str, port: int, upsample_factor=1,
+                 domain_name: str = "g1_simple", image_size: int = DEFAULT_IMAGE_SIZE, **kwargs):
         super().__init__(robot, **kwargs)
-        
+
         self.server_ip = host # if access server host inside docker container
         self.server_port = port
         self.upsample_factor = upsample_factor
 
-        self.client = HttpActionClient(self.server_ip, self.server_port)
+        self.client = CosmosPredictClient(
+            self.server_ip, self.server_port,
+            domain_name=domain_name, image_size=image_size,
+        )
         self._global_step_idx = 0
 
         # last command (high level input to lower policy)
@@ -48,23 +113,20 @@ class PsixDecoupledWbcAgent(SonicDecoupledWbcAgent):
         self.sonic_upper_joint_names = [name for name, idx in self._dwbc_robot_model.joint_to_dof_index.items() if idx in indices]
 
     def get_action(
-        self, 
-        observation, 
-        instruction=None, 
-        info=None, 
-        conditions=None, 
+        self,
+        observation,
+        instruction=None,
+        info=None,
+        conditions=None,
         **kwargs
     ):
         self._last_observation = observation
         self._last_qpos = observation["joint_qpos"]
 
-        instruction = f"Task: {instruction}" if instruction is not None else None # align with psix model transform
-
         if len(self._action_queue) == 0:
-            # send query to server
-            observations = {
-                "video.rs_view": observation["head_stereo_left"], # np.zeros_like()
-            }
+            # Assemble the ego frame (RGB) and the proprio conditioning state, then
+            # query the Cosmos server via its /predict endpoint (see cosmos_http_client.py).
+            frame_rgb = np.asarray(observation["head_stereo_left"], dtype=np.uint8)  # [H, W, 3] RGB
 
             proprio = observation["joint_qpos"][None]
             states = np.concatenate(
@@ -73,21 +135,19 @@ class PsixDecoupledWbcAgent(SonicDecoupledWbcAgent):
                 ],
                 axis=1,
             ).astype(np.float32) # (1, 32)
-            state_dict = {"states": states} # np.zeros_like()
 
             if self._reset_history:
                 history = {"reset": True}
                 self._reset_history = False
             else:
                 history = {}
-            pred_action, *_ = self.client.query_action(
-                observations, 
-                instruction or "bend to pick up the object", 
-                state_dict, 
-                {},
-                history=history, 
-                dataset="simple",
-            )
+
+            pred_action = self.client.predict(
+                frame_rgb,
+                instruction or "bend to pick up the object",
+                states,
+                history
+            )  # (T, D)
             print(f"Received {pred_action.shape[0]} actions from server.")
             for i in range(pred_action.shape[0]):
                 for _ in range(self.upsample_factor): # account for upsampling during training
@@ -98,12 +158,12 @@ class PsixDecoupledWbcAgent(SonicDecoupledWbcAgent):
                         )
                     )
                     target_waist_qpos = {
-                        "waist_yaw_joint": pred_action[i][30], 
-                        "waist_roll_joint": pred_action[i][28], 
-                        "waist_pitch_joint": pred_action[i][29] 
+                        "waist_yaw_joint": pred_action[i][30],
+                        "waist_roll_joint": pred_action[i][28],
+                        "waist_pitch_joint": pred_action[i][29]
                     }
                     self.queue_action(ActionCmd(
-                        "vla_cmd", 
+                        "vla_cmd",
                         target_upper_body_pose={**target_qpos, **target_waist_qpos},  # (31,)
                         navigate_cmd=pred_action[i][32:36],
                         base_height_command=pred_action[i][31:32],
@@ -111,12 +171,12 @@ class PsixDecoupledWbcAgent(SonicDecoupledWbcAgent):
 
         action_cmd = super().get_action(observation, instruction, **kwargs)
         if action_cmd.type == "vla_cmd":
-             
+
             proprio = self.robot.prepare_obs()
             wbc_obs = self._build_wbc_observation(proprio)
             self._wbc_policy.set_observation(wbc_obs)
             t_now = time.monotonic()
-            
+
             control_freq = self._control_frequency
             target_time = t_now + 1 / control_freq
 
@@ -150,7 +210,7 @@ class PsixDecoupledWbcAgent(SonicDecoupledWbcAgent):
         self._last_pred_action = action_cmd
         self._global_step_idx += 1
         return action_cmd
-    
+
     def reset(self, **kwargs):
         super().reset(**kwargs)  # clear queue
 

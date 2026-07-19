@@ -92,6 +92,25 @@ def _redirect_stdio_to_log(log_path: str | None):
         log_file.close()
 
 
+def _fetch_policy_info(host: str, port: int, timeout: float = 5.0) -> dict[str, Any]:
+    """GET http://<host>:<port>/info from the policy server.
+
+    Returns the parsed JSON (containing e.g. "policy" and "timestamp"). The
+    endpoint is optional and not guaranteed to exist; if it is missing or the
+    request fails for any reason, returns an empty dict so the caller falls back
+    to the default output path.
+    """
+    import urllib.request
+
+    url = f"http://{host}:{port}/info"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        print(f"No policy info from {url} ({e}); using default eval output path.")
+        return {}
+
+
 def _make_sonic_config() -> dict[str, Any]:
     from gear_sonic.utils.mujoco_sim.configs import SimLoopConfig
 
@@ -182,9 +201,17 @@ def _run_eval_worker(
     control_dt = 4 * sim_dt  # = 0.02 s (50 Hz)
 
     # eval videos -> data/evals/<policy>/<task>/<dr>, where <dr> is the trailing
-    # component of --data-dir (data/evals/simple-eval/<task>/<dr>).
+    # component of --data-dir (data/evals/simple-eval/<task>/<dr>). When the
+    # policy server exposes /info, the <task> component is prefixed with the
+    # exact checkpoint it serves: data/evals/<policy>/<server_policy>-<timestamp>.<task>/<dr>.
     dr = Path(data_dir).name
-    eval_output_dir = os.path.join("data/evals", policy, env_id.split("/")[1], dr)
+    task_component = env_id.split("/")[1]
+    policy_info = _fetch_policy_info(host, port)
+    server_policy = policy_info.get("policy")
+    server_timestamp = policy_info.get("timestamp")
+    if server_policy and server_timestamp:
+        task_component = f"{server_policy}-{server_timestamp}.{task_component}"
+    eval_output_dir = os.path.join("data/evals", policy, task_component, dr)
     os.makedirs(eval_output_dir, exist_ok=True)
 
     if rollout_save_dir and num_workers != 1:
@@ -291,8 +318,6 @@ def _run_eval_worker(
     stats = defaultdict(bool)
 
     for eps_idx in episode_indices:
-        # if eps_idx <=1 or eps_idx > 8:
-        #     continue
         env_conf, episode = get_episode(dataset, eps_idx)  # type: ignore[arg-type]
         task_id = f"episode_{eps_idx}"
         report("episode_start", episode=task_id)
