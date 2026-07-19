@@ -6,6 +6,7 @@ Licensed under the terms in LICENSE file.
 """
 
 import os
+import warnings
 
 import numpy as np
 from simple.agents.primitive_agent import PrimitiveAgent
@@ -57,13 +58,33 @@ class DpG1Agent(PrimitiveAgent):
         self._global_step_idx = 0
         self._session_idx = 0
         self._session_id = self._make_session_id()
+        self._warned_episode_index_fallback = False
 
         # last command (high level input to lower policy)
         self._last_cmd_torso_rpyh = np.array([0, 0, 0, 0.75]) # FIXME hardcoded for g1 wholebody, need to be more general in the future
         self._reset_history = True
 
+    def _warn_if_noncanonical_episode_index(self, info) -> None:
+        try:
+            value = int(info["episode_index"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            value = -1
+        if value >= 0 or self._warned_episode_index_fallback:
+            return
+        warnings.warn(
+            "missing global episode_index; falling back to a process-local "
+            "session ordinal that is unsafe across workers or shards",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        self._warned_episode_index_fallback = True
+
     def _make_session_id(self) -> str:
         return f"dp-{os.getpid()}-{self._session_idx}"
+
+    def _request_episode_index(self, info) -> int:
+        value = int(info.get("episode_index", -1)) if info is not None else -1
+        return value if value >= 0 else int(self._session_idx)
 
     def get_action(
         self, 
@@ -90,19 +111,20 @@ class DpG1Agent(PrimitiveAgent):
                 axis=1,
             ).astype(np.float32) # (1, 32)
             state_dict = {"states": states} # np.zeros_like()
+            self._warn_if_noncanonical_episode_index(info)
 
             if self._reset_history:
                 history = {
                     "reset": True,
                     "session_id": self._session_id,
-                    "episode_index": int(info.get("episode_index", -1)) if info is not None else -1,
+                    "episode_index": self._request_episode_index(info),
                     "step_index": int(self._global_step_idx),
                 }
                 self._reset_history = False
             else:
                 history = {
                     "session_id": self._session_id,
-                    "episode_index": int(info.get("episode_index", -1)) if info is not None else -1,
+                    "episode_index": self._request_episode_index(info),
                     "step_index": int(self._global_step_idx),
                 }
             pred_action, *_ = self.client.query_action(

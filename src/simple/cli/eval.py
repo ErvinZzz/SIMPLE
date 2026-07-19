@@ -23,7 +23,6 @@ import requests
 import torch  # noqa: F401
 import typer
 from gymnasium.wrappers import TimeLimit
-from rich.console import Group
 from rich.live import Live
 from typing_extensions import Annotated
 
@@ -59,6 +58,100 @@ def _append_eval_stats_line(eval_dir: str, line: str) -> None:
         f.write(line)
         f.flush()
         os.fsync(f.fileno())
+
+
+def _success_rate(stats: dict[str, bool]) -> float:
+    return sum(stats.values()) / len(stats) if stats else 0.0
+
+
+def _append_success_rate_footer_if_owner(
+    eval_dir: str,
+    stats: dict[str, bool],
+    num_workers: int,
+    *,
+    owner: str,
+) -> bool:
+    """Append the run footer exactly once from the process that owns it.
+
+    A single Isaac worker must persist the footer before ``raw_env.close()``:
+    closing SimulationApp may terminate the process instead of returning to
+    ``run_eval``.  With multiple workers, only the parent has the aggregate
+    statistics, so workers skip the footer and the parent writes it.
+    """
+    if owner not in {"worker", "parent"}:
+        raise ValueError(f"Unknown success-rate footer owner: {owner}")
+
+    should_append = (num_workers == 1 and owner == "worker") or (
+        num_workers > 1 and owner == "parent"
+    )
+    if not should_append:
+        return False
+
+    _append_eval_stats_line(eval_dir, f"success rate: {_success_rate(stats):.2f} \n")
+    return True
+
+
+def _finalize_eval_worker(
+    raw_env: Any,
+    stats: dict[str, bool],
+    eval_dir: str,
+    num_workers: int,
+    persist_payload: Callable[[str, Any], None],
+    report: Callable[..., None],
+) -> None:
+    """Persist completed work and close the simulator in shutdown-safe order."""
+    persist_payload("ok", dict(stats))
+    _append_success_rate_footer_if_owner(
+        eval_dir,
+        stats,
+        num_workers,
+        owner="worker",
+    )
+    report("worker_status", status="closing")
+    raw_env.close()
+
+    # These are useful when an environment close returns normally.  The first
+    # payload/footer above are authoritative when SimulationApp exits in close.
+    persist_payload("ok", dict(stats))
+    report(
+        "worker_done",
+        completed_episodes=len(stats),
+        successes=sum(stats.values()),
+    )
+
+
+def _with_episode_index(info: Any, episode_index: int) -> dict[str, Any]:
+    """Attach the evaluator's global episode id without mutating env info."""
+    action_info = dict(info or {})
+    action_info["episode_index"] = int(episode_index)
+    return action_info
+
+
+def _get_action_with_episode_index(
+    agent: Any,
+    observation: Any,
+    info: Any,
+    instruction: Any,
+    episode_index: int,
+) -> Any:
+    """Call a policy with an explicit global episode identity."""
+    return agent.get_action(
+        observation,
+        info=_with_episode_index(info, episode_index),
+        instruction=instruction,
+    )
+
+
+def _episode_indices_for_worker(
+    dataset_size: int,
+    episode_start: int,
+    num_episodes: int,
+    worker_id: int,
+    num_workers: int,
+) -> list[int]:
+    """Return this worker's slice of the evaluator's global episode ids."""
+    global_indices = list(range(episode_start, dataset_size))[:num_episodes]
+    return global_indices[worker_id::num_workers]
 
 
 @contextmanager
@@ -219,9 +312,13 @@ def _run_eval_worker(
     else:
         raise NotImplementedError(f"Data format {data_format} not supported YET.")
 
-    global_episode_indices = list(range(episode_start, dataset_size))
-    global_episode_indices = global_episode_indices[:num_episodes]
-    episode_indices = global_episode_indices[worker_id::num_workers]
+    episode_indices = _episode_indices_for_worker(
+        dataset_size,
+        episode_start,
+        num_episodes,
+        worker_id,
+        num_workers,
+    )
     print(
         f"Evaluating {len(episode_indices)} episodes "
         f"(worker={worker_id}/{num_workers}, requested_total={num_episodes}, "
@@ -311,8 +408,16 @@ def _run_eval_worker(
         episode_over = False
         while not episode_over:
             try:
-                action = agent.get_action(
-                    observation, info=info, instruction=instruction
+                # Environment info is replaced after every step and does not
+                # necessarily identify the dataset episode. Attach the global
+                # evaluator index to every policy request so request-keyed RNG
+                # remains stable across workers and episode_start values.
+                action = _get_action_with_episode_index(
+                    agent,
+                    observation,
+                    info,
+                    instruction,
+                    eps_idx,
                 )
                 observation, reward, terminated, truncated, info = env.step(action)
                 episode_over = terminated or truncated
@@ -341,14 +446,13 @@ def _run_eval_worker(
 
         if save_video and isinstance(env, VideoRecorder):
             env.release()
-    persist_payload("ok", dict(stats))
-    report("worker_status", status="closing")
-    raw_env.close()
-    persist_payload("ok", dict(stats))
-    report(
-        "worker_done",
-        completed_episodes=len(stats),
-        successes=sum(stats.values()),
+    _finalize_eval_worker(
+        raw_env=raw_env,
+        stats=dict(stats),
+        eval_dir=eval_dir,
+        num_workers=num_workers,
+        persist_payload=persist_payload,
+        report=report,
     )
     return stats
 
@@ -603,11 +707,16 @@ def run_eval(
             )
             raise typer.Exit(code=1)
 
-    sr = sum(stats.values()) / len(stats) if stats else 0.0
+    sr = _success_rate(stats)
     console.print(f"Success rate {env_id} - {policy}: {sr:.2%}")
     console.print(f"Eval log: {log_path}")
 
-    _append_eval_stats_line(eval_dir, f"success rate: {sr:.2f} \n")
+    _append_success_rate_footer_if_owner(
+        eval_dir,
+        stats,
+        num_workers,
+        owner="parent",
+    )
     return EvalResult(
         env_id=env_id,
         policy=policy,

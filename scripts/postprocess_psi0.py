@@ -34,6 +34,22 @@ ACTION_SLICES = [
 ]
 
 
+def history_cmd_to_torso_rpy(history_cmd, n_rows):
+    """Map command history [vx, vy, vyaw, yaw, pitch, roll, ...] to [roll, pitch, yaw]."""
+    history_cmd = np.asarray(history_cmd)
+    if history_cmd.ndim != 2 or history_cmd.shape[1] < 6:
+        raise ValueError(
+            f"history_cmd must have shape (T, >=6), got {history_cmd.shape}"
+        )
+    if n_rows < 0 or n_rows > history_cmd.shape[0]:
+        raise ValueError(
+            f"requested {n_rows} history rows from array with {history_cmd.shape[0]} rows"
+        )
+    torso_rpy = np.ascontiguousarray(history_cmd[:n_rows, 3:6][:, ::-1], dtype=np.float32)
+    assert torso_rpy.shape == (n_rows, 3)
+    return torso_rpy
+
+
 def load_jsonl(path: Path):
     rows = []
     if not path.exists():
@@ -114,15 +130,19 @@ def modality_dict():
 def build_vectors(proprio, cmd, history_cmd, action, target_yaw, turning_flag):
     to = proprio.shape[0]
     ta = action.shape[0]
+    torso_rpy = history_cmd_to_torso_rpy(history_cmd, to)
 
     # states: match to_psi0_state_format ordering
     states = np.concatenate(
         [proprio[:, s:e] for _, s, e in STATE_SLICES] + [
-            history_cmd[:to, 3:6][::-1],  # torso_rpy
+            torso_rpy,
             history_cmd[:to, 6:7]         # base height
         ],
         axis=1,
     ).astype(np.float32)
+    assert np.array_equal(states[:, 28:31], torso_rpy), (
+        "states[:, 28:31] must be row-aligned [roll, pitch, yaw] torso history"
+    )
 
     # actions: match to_psi0_action_format ordering
     actions = np.concatenate(
@@ -164,7 +184,7 @@ def build_proprio_obs(proprio, history_cmd):
     )
     
     # torso rpy
-    torso_rpy = history_cmd[: proprio.shape[0], 3:6][:, ::-1].astype(np.float32)
+    torso_rpy = history_cmd_to_torso_rpy(history_cmd, proprio.shape[0])
     # base height from command
     prev_height = history_cmd[: proprio.shape[0], 6:7].astype(np.float32)
 
