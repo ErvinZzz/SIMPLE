@@ -4,7 +4,7 @@ import ast
 import warnings
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import pytest
@@ -73,9 +73,23 @@ def _load_functions(path: Path, *function_names: str):
     ]
     assert {function.name for function in functions} == set(function_names)
     module = ast.fix_missing_locations(ast.Module(body=functions, type_ignores=[]))
-    namespace = {"Any": Any}
+    namespace = {"Any": Any, "Callable": Callable}
     exec(compile(module, str(path), "exec"), namespace)
     return tuple(namespace[name] for name in function_names)
+
+
+def _load_eval_shutdown_helpers(eval_filename="eval.py"):
+    eval_path = REPO_ROOT / "src" / "simple" / "cli" / eval_filename
+    helpers = _load_functions(
+        eval_path,
+        "_success_rate",
+        "_append_success_rate_footer_if_owner",
+        "_finalize_eval_worker",
+    )
+    namespace = helpers[0].__globals__
+    for helper in helpers:
+        namespace[helper.__name__] = helper
+    return helpers, namespace
 
 
 def test_torso_mapping_reverses_axes_without_reversing_time():
@@ -211,3 +225,112 @@ def test_worker_shards_preserve_global_episode_ids():
     args = (100, 20, 5)
     assert indices_for_worker(*args, worker_id=0, num_workers=2) == [20, 22, 24]
     assert indices_for_worker(*args, worker_id=1, num_workers=2) == [21, 23]
+
+
+@pytest.mark.parametrize("eval_filename", ["eval.py", "eval_decoupled_wbc.py"])
+def test_single_worker_writes_footer_before_nonreturning_simulator_close(
+    eval_filename,
+):
+    (_, _, finalize_worker), namespace = _load_eval_shutdown_helpers(eval_filename)
+    events = []
+
+    def append_line(eval_dir, line):
+        events.append(("footer", eval_dir, line))
+
+    namespace["_append_eval_stats_line"] = append_line
+
+    class SimulationShutdown(BaseException):
+        pass
+
+    class NonReturningEnv:
+        def close(self):
+            events.append(("close",))
+            raise SimulationShutdown
+
+    def persist(kind, payload):
+        events.append(("persist", kind, payload))
+
+    def report(event, **payload):
+        events.append(("report", event, payload))
+
+    with pytest.raises(SimulationShutdown):
+        finalize_worker(
+            NonReturningEnv(),
+            {"episode_0": True, "episode_1": False},
+            "/eval",
+            num_workers=1,
+            persist_payload=persist,
+            report=report,
+        )
+
+    assert [event[0] for event in events] == ["persist", "footer", "report", "close"]
+    assert events[1] == ("footer", "/eval", "success rate: 0.50 \n")
+
+
+@pytest.mark.parametrize("eval_filename", ["eval.py", "eval_decoupled_wbc.py"])
+def test_returning_single_worker_close_does_not_duplicate_footer_in_parent(
+    eval_filename,
+):
+    (_, append_footer, finalize_worker), namespace = _load_eval_shutdown_helpers(
+        eval_filename
+    )
+    footers = []
+    namespace["_append_eval_stats_line"] = lambda eval_dir, line: footers.append(
+        (eval_dir, line)
+    )
+
+    class ReturningEnv:
+        def close(self):
+            return None
+
+    stats = {"episode_0": True, "episode_1": True}
+    finalize_worker(
+        ReturningEnv(),
+        stats,
+        "/eval",
+        num_workers=1,
+        persist_payload=lambda kind, payload: None,
+        report=lambda event, **payload: None,
+    )
+    appended_by_parent = append_footer(
+        "/eval",
+        stats,
+        1,
+        owner="parent",
+    )
+
+    assert appended_by_parent is False
+    assert footers == [("/eval", "success rate: 1.00 \n")]
+
+
+@pytest.mark.parametrize("eval_filename", ["eval.py", "eval_decoupled_wbc.py"])
+def test_multiworker_footer_is_written_once_from_aggregate_parent_stats(eval_filename):
+    (_, append_footer, finalize_worker), namespace = _load_eval_shutdown_helpers(
+        eval_filename
+    )
+    footers = []
+    namespace["_append_eval_stats_line"] = lambda eval_dir, line: footers.append(
+        (eval_dir, line)
+    )
+
+    class ReturningEnv:
+        def close(self):
+            return None
+
+    worker_stats = [
+        {"episode_0": True, "episode_2": False},
+        {"episode_1": True, "episode_3": True},
+    ]
+    for stats in worker_stats:
+        finalize_worker(
+            ReturningEnv(),
+            stats,
+            "/eval",
+            num_workers=2,
+            persist_payload=lambda kind, payload: None,
+            report=lambda event, **payload: None,
+        )
+
+    aggregate = {key: value for stats in worker_stats for key, value in stats.items()}
+    assert append_footer("/eval", aggregate, 2, owner="parent") is True
+    assert footers == [("/eval", "success rate: 0.75 \n")]
