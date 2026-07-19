@@ -61,6 +61,40 @@ def _append_eval_stats_line(eval_dir: str, line: str) -> None:
         os.fsync(f.fileno())
 
 
+def _with_episode_index(info: Any, episode_index: int) -> dict[str, Any]:
+    """Attach the evaluator's global episode id without mutating env info."""
+    action_info = dict(info or {})
+    action_info["episode_index"] = int(episode_index)
+    return action_info
+
+
+def _get_action_with_episode_index(
+    agent: Any,
+    observation: Any,
+    info: Any,
+    instruction: Any,
+    episode_index: int,
+) -> Any:
+    """Call a policy with an explicit global episode identity."""
+    return agent.get_action(
+        observation,
+        info=_with_episode_index(info, episode_index),
+        instruction=instruction,
+    )
+
+
+def _episode_indices_for_worker(
+    dataset_size: int,
+    episode_start: int,
+    num_episodes: int,
+    worker_id: int,
+    num_workers: int,
+) -> list[int]:
+    """Return this worker's slice of the evaluator's global episode ids."""
+    global_indices = list(range(episode_start, dataset_size))[:num_episodes]
+    return global_indices[worker_id::num_workers]
+
+
 @contextmanager
 def _redirect_stdio_to_log(log_path: str | None):
     if not log_path:
@@ -219,9 +253,13 @@ def _run_eval_worker(
     else:
         raise NotImplementedError(f"Data format {data_format} not supported YET.")
 
-    global_episode_indices = list(range(episode_start, dataset_size))
-    global_episode_indices = global_episode_indices[:num_episodes]
-    episode_indices = global_episode_indices[worker_id::num_workers]
+    episode_indices = _episode_indices_for_worker(
+        dataset_size,
+        episode_start,
+        num_episodes,
+        worker_id,
+        num_workers,
+    )
     print(
         f"Evaluating {len(episode_indices)} episodes "
         f"(worker={worker_id}/{num_workers}, requested_total={num_episodes}, "
@@ -311,8 +349,16 @@ def _run_eval_worker(
         episode_over = False
         while not episode_over:
             try:
-                action = agent.get_action(
-                    observation, info=info, instruction=instruction
+                # Environment info is replaced after every step and does not
+                # necessarily identify the dataset episode. Attach the global
+                # evaluator index to every policy request so request-keyed RNG
+                # remains stable across workers and episode_start values.
+                action = _get_action_with_episode_index(
+                    agent,
+                    observation,
+                    info,
+                    instruction,
+                    eps_idx,
                 )
                 observation, reward, terminated, truncated, info = env.step(action)
                 episode_over = terminated or truncated
